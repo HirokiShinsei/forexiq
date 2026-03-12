@@ -73,7 +73,7 @@ declare module "http" {
 //    The handler only sets headers for origins in ALLOWED_ORIGINS;
 //    all other requests pass through without CORS headers.
 app.use("/api/", applyCors);
-app.options("/api/*", applyCors); // explicit OPTIONS catch-all
+app.options("/api/*path", applyCors); // explicit OPTIONS catch-all (Express 5: named wildcard required)
 
 // 2. Security Headers (Helmet)
 app.use(
