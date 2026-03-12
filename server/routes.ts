@@ -565,7 +565,7 @@ const YF_HEADERS = {
 };
 
 // ── Yahoo Finance: current spot price + previous close ───────────────
-interface YFQuote { price: number; prevClose: number | null; }
+interface YFQuote { price: number; prevClose: number | null; dayHigh: number | null; dayLow: number | null; }
 
 async function fetchYFQuote(symbol: string): Promise<YFQuote | null> {
   try {
@@ -578,7 +578,9 @@ async function fetchYFQuote(symbol: string): Promise<YFQuote | null> {
     if (typeof price !== "number" || price <= 0) return null;
     // previousClose from meta (most reliable), fall back to second-to-last close
     const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? null;
-    return { price, prevClose };
+    const dayHigh = meta.regularMarketDayHigh ?? null;
+    const dayLow  = meta.regularMarketDayLow  ?? null;
+    return { price, prevClose, dayHigh, dayLow };
   } catch {
     return null;
   }
@@ -1091,13 +1093,33 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const change = price - prevClose;
       const changePct = (change / prevClose) * 100;
 
+      // Today's intraday high/low: prefer live YF quote meta over candle bar
+      // (candle bars for new-day bars are seeded with high=low=price until session data arrives)
+      let todayHigh: number = lastCandle?.high ?? price;
+      let todayLow:  number = lastCandle?.low  ?? price;
+      try {
+        let yfLiveQ: YFQuote | null = null;
+        if (symbol === "EUR_PHP") yfLiveQ = await fetchYFQuote("EURPHP=X");
+        else if (symbol === "USD_PHP") yfLiveQ = await fetchYFQuote("PHP=X");
+        else if (symbol === "AED_PHP") {
+          // AED cross: (1/AED=X) * PHP=X for H/L
+          const [aedQ2, usdQ2] = await Promise.all([fetchYFQuote("AED=X"), fetchYFQuote("PHP=X")]);
+          if (aedQ2?.dayHigh && aedQ2.dayHigh > 1 && usdQ2?.dayHigh && usdQ2.dayHigh > 0) {
+            todayHigh = (1 / aedQ2.price) * (usdQ2.dayHigh ?? usdQ2.price);
+            todayLow  = (1 / aedQ2.price) * (usdQ2.dayLow  ?? usdQ2.price);
+          }
+          yfLiveQ = null; // handled above
+        } else if (symbol === "XAU_USD") yfLiveQ = await fetchYFQuote("GC=F");
+        if (yfLiveQ?.dayHigh && yfLiveQ.dayHigh > 0) todayHigh = yfLiveQ.dayHigh;
+        if (yfLiveQ?.dayLow  && yfLiveQ.dayLow  > 0) todayLow  = yfLiveQ.dayLow;
+      } catch { /* keep candle-derived values */ }
       const quote: TickerQuote = {
         symbol,
         price,
         change,
         changePct,
-        high: lastCandle?.high ?? price,
-        low: lastCandle?.low ?? price,
+        high: todayHigh,
+        low:  todayLow,
         updatedAt: new Date().toISOString(),
       };
 
@@ -1121,10 +1143,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           changePct: (ydayChange / yday.open) * 100,
         });
 
-        // Last Week: open = candle ~5 trading days ago, close = that candle's own close
-        // This shows what happened DURING that week window, not vs today
-        const weekStartIdx = Math.max(0, candles.length - 6);
-        const weekEndIdx   = Math.max(weekStartIdx + 1, candles.length - 2); // last completed day
+        // Last Week: open = 6 trading days ago open, close = 2 trading days ago close
+        // (the completed 5-day week window ending the last completed day)
+        const weekStartIdx = Math.max(0, candles.length - 7);
+        const weekEndIdx   = Math.max(weekStartIdx + 1, candles.length - 3);
         const weekOpen   = candles[weekStartIdx].open;
         const weekClose  = candles[weekEndIdx].close;
         const weekChange = weekClose - weekOpen;
@@ -1136,9 +1158,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           changePct: (weekChange / weekOpen) * 100,
         });
 
-        // Last Month: open = candle ~22 trading days ago, close = last completed day
-        const monthStartIdx = Math.max(0, candles.length - 23);
-        const monthEndIdx   = Math.max(monthStartIdx + 1, candles.length - 2);
+        // Last Month: open = 23 trading days ago open, close = 3 trading days ago close
+        const monthStartIdx = Math.max(0, candles.length - 24);
+        const monthEndIdx   = Math.max(monthStartIdx + 1, candles.length - 4);
         const monthOpen   = candles[monthStartIdx].open;
         const monthClose  = candles[monthEndIdx].close;
         const monthChange = monthClose - monthOpen;

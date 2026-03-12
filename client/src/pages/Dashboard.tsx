@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import SignalCard from "../components/SignalCard";
@@ -9,7 +8,6 @@ import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
 import SearchBar from "../components/SearchBar";
 import PriceHistoryPanel from "../components/PriceHistoryPanel";
-import IndicatorsSummary from "../components/IndicatorsSummary";
 import type { MarketData } from "../../../shared/schema";
 import { AlertCircle, Activity, Newspaper } from "lucide-react";
 import { apiRequest } from "../lib/queryClient";
@@ -39,8 +37,8 @@ function LoadingSkeleton() {
       <Skeleton className="h-20 w-full" />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-3">
-          <Skeleton className="h-52 w-full" />
           <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-80 w-full" />
         </div>
         <div className="space-y-4">
           <Skeleton className="h-52 w-full" />
@@ -104,16 +102,16 @@ function MarketPanel({ symbol }: { symbol: string }) {
   if (!data) return null;
 
   const ctx = MARKET_CONTEXT[symbol] ?? MARKET_CONTEXT["XAU_USD"];
-  const filteredNews = data.news.filter(n =>
-    n.relevance.includes(symbol.replace("_", "/"))
-  );
+  // Filter news strictly to this tab's pair only
+  const pairLabel = symbol.replace("_", "/");
+  const tabNews = data.news.filter(n => n.relevance.includes(pairLabel));
 
   return (
     <div className="p-4 space-y-4">
       {/* Live quote header */}
       <QuoteHeader
         quote={data.quote}
-        label={symbol.replace("_", "/")}
+        label={pairLabel}
         isLoading={isFetching}
         onRefresh={() => refetch()}
       />
@@ -131,36 +129,25 @@ function MarketPanel({ symbol }: { symbol: string }) {
             symbol={symbol}
           />
 
-          {/* Technical snapshot */}
-          <IndicatorsSummary
-            indicators={data.indicators}
-            quote={data.quote}
-            symbol={symbol}
-          />
-
-          {/* Inline news — filtered to this exchange only */}
-          <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-border/50 flex items-center justify-between">
+          {/* Inline news — strictly filtered to this pair only */}
+          <div className="rounded-lg border border-border/60 bg-card flex flex-col">
+            <div className="px-4 py-2.5 border-b border-border/50 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-2">
                 <Newspaper size={12} className="text-muted-foreground" />
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Related News
-                </span>
-                <span className="text-xs text-muted-foreground/60">
-                  — {symbol.replace("_", "/")} events
+                  {pairLabel} News
                 </span>
               </div>
-              {filteredNews.length > 0 && (
+              {tabNews.length > 0 && (
                 <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium">
-                  {filteredNews.length}
+                  {tabNews.length}
                 </span>
               )}
             </div>
-            <ScrollArea className="max-h-96">
-              <div className="p-3">
-                <NewsPanel news={data.news} filterSymbol={symbol} />
-              </div>
-            </ScrollArea>
+            {/* Scrollable news list — max 480px, no clip */}
+            <div className="overflow-y-auto max-h-[480px] p-3">
+              <NewsPanel news={data.news} filterSymbol={symbol} />
+            </div>
           </div>
         </div>
 
@@ -277,7 +264,7 @@ export default function Dashboard() {
       {/* Footer */}
       <footer className="border-t border-border/40 px-4 py-2 flex items-center justify-between">
         <div className="text-xs text-muted-foreground/50">
-          Data: Frankfurter · Yahoo Finance · No tracking · Signals computed locally
+          Data: Wise · Frankfurter · Yahoo Finance · No tracking · Signals computed locally
         </div>
         <a
           href="https://www.perplexity.ai/computer"
