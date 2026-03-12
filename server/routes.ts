@@ -697,8 +697,11 @@ async function fetchGoldHistory(days = 90): Promise<OHLCBar[]> {
   return generateMockCandles(days, 3180, 0.008);
 }
 
+// ── Rate result type — price + previous close for accurate change % ──
+interface RateResult { price: number; prevClose: number | null; }
+
 // ── Current spot rate ─────────────────────────────────────────────────
-async function fetchCurrentRate(base: string, target: string): Promise<number> {
+async function fetchCurrentRate(base: string, target: string): Promise<RateResult> {
   // Frankfurter for EUR & USD vs PHP
   if (base !== "AED") {
     try {
@@ -708,36 +711,49 @@ async function fetchCurrentRate(base: string, target: string): Promise<number> {
       if (res.ok) {
         const data = await res.json();
         const rate = data.rates?.[target];
-        if (typeof rate === "number" && rate > 0) return rate;
+        if (typeof rate === "number" && rate > 0) {
+          // Frankfurter doesn’t expose prevClose — get it from Yahoo Finance meta
+          const yfSym = base === "EUR" ? "EURPHP=X" : "PHP=X";
+          const q = await fetchYFQuote(yfSym);
+          return { price: rate, prevClose: q?.prevClose ?? null };
+        }
       }
     } catch { /* fall through */ }
 
-    // Yahoo Finance fallback
+    // Yahoo Finance fallback — has both price and prevClose
     const yfSymbol = base === "EUR" ? "EURPHP=X" : "PHP=X";
-    const price = await fetchYFPrice(yfSymbol);
-    if (price) return price;
+    const q = await fetchYFQuote(yfSymbol);
+    if (q && q.price > 0) return q;
   }
 
   // AED/PHP: cross rate via AED=X and PHP=X
   // AED=X on Yahoo Finance gives the AED/USD rate (USD per 1 AED inverted —
   // actually Yahoo returns USD count per AED, but AED is pegged to USD at
-  // 1 USD = 3.6725 AED, so AED=X = 3.6725, not 0.2723).
+  // 1 USD = 3.6725 AED, so AED=X ≈ 3.6725).
   // Correct formula: AED/PHP = (1/AED=X) * PHP=X
   // e.g. (1/3.6719) * 59.61 = 0.2723 * 59.61 = 16.23
   if (base === "AED" && target === "PHP") {
-    const [aedRate, usdPhp] = await Promise.all([
-      fetchYFPrice("AED=X"),   // Yahoo: USD per AED reciprocal (= 3.6725 peg)
-      fetchYFPrice("PHP=X"),   // Yahoo: PHP per 1 USD
+    const [aedQ, usdQ] = await Promise.all([
+      fetchYFQuote("AED=X"),   // USD per AED (peg ≈ 3.6725)
+      fetchYFQuote("PHP=X"),   // PHP per 1 USD
     ]);
-    if (aedRate && aedRate > 1 && usdPhp) return (1 / aedRate) * usdPhp;
-    return 16.22; // ~(1/3.6725) * 59.6
+    if (aedQ && aedQ.price > 1 && usdQ && usdQ.price > 0) {
+      const price = (1 / aedQ.price) * usdQ.price;
+      // Reconstruct prevClose from the two prevCloses using the same cross formula
+      const prevClose =
+        (aedQ.prevClose && aedQ.prevClose > 1 && usdQ.prevClose && usdQ.prevClose > 0)
+          ? (1 / aedQ.prevClose) * usdQ.prevClose
+          : null;
+      return { price, prevClose };
+    }
+    return { price: 16.22, prevClose: null };
   }
 
   // Hardcoded realistic fallbacks
-  if (base === "EUR" && target === "PHP") return 68.6;
-  if (base === "USD" && target === "PHP") return 59.6;
-  if (base === "AED" && target === "PHP") return 16.22;
-  return 1;
+  if (base === "EUR" && target === "PHP") return { price: 68.6, prevClose: null };
+  if (base === "USD" && target === "PHP") return { price: 59.6, prevClose: null };
+  if (base === "AED" && target === "PHP") return { price: 16.22, prevClose: null };
+  return { price: 1, prevClose: null };
 }
 
 // ── Gold spot: Yahoo Finance GC=F ─────────────────────────────────────
