@@ -6,7 +6,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import SignalCard from "../components/SignalCard";
 import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
-import SearchBar from "../components/SearchBar";
 import PriceHistoryPanel from "../components/PriceHistoryPanel";
 import type { MarketData } from "../../../shared/schema";
 import { AlertCircle, Activity, Newspaper } from "lucide-react";
@@ -42,14 +41,13 @@ function LoadingSkeleton() {
         </div>
         <div className="space-y-4">
           <Skeleton className="h-52 w-full" />
-          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-48 w-full" />
         </div>
       </div>
     </div>
   );
 }
 
-// Market context copy per symbol
 const MARKET_CONTEXT: Record<string, { isTransfer: boolean; paras: [string, string] }> = {
   EUR_PHP: {
     isTransfer: true,
@@ -102,9 +100,8 @@ function MarketPanel({ symbol }: { symbol: string }) {
   if (!data) return null;
 
   const ctx = MARKET_CONTEXT[symbol] ?? MARKET_CONTEXT["XAU_USD"];
-  // Filter news strictly to this tab's pair only
   const pairLabel = symbol.replace("_", "/");
-  const tabNews = data.news.filter(n => n.relevance.includes(pairLabel));
+  const tabNews   = data.news.filter(n => n.relevance.includes(pairLabel));
 
   return (
     <div className="p-4 space-y-4">
@@ -116,56 +113,52 @@ function MarketPanel({ symbol }: { symbol: string }) {
         onRefresh={() => refetch()}
       />
 
-      {/* Main two-column grid */}
+      {/* Two-column grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
-        {/* ── Left column: Price History + News ── */}
+        {/* Left: Price History + News */}
         <div className="xl:col-span-2 space-y-4">
 
-          {/* Price history: live / yesterday / last week / last month */}
           <PriceHistoryPanel
             quote={data.quote}
             periodStats={data.periodStats}
             symbol={symbol}
           />
 
-          {/* Inline news — strictly filtered to this pair only */}
-          <div className="rounded-lg border border-border/60 bg-card flex flex-col">
-            <div className="px-4 py-2.5 border-b border-border/50 flex items-center justify-between flex-shrink-0">
+          {/* News — filtered to this pair only */}
+          <div className="rounded-xl border border-border/60 bg-card flex flex-col">
+            <div className="px-4 py-3 border-b border-border/50 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Newspaper size={12} className="text-muted-foreground" />
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                <Newspaper size={12} className="text-muted-foreground/70" />
+                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
                   {pairLabel} News
                 </span>
               </div>
               {tabNews.length > 0 && (
-                <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium">
+                <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-xs font-semibold">
                   {tabNews.length}
                 </span>
               )}
             </div>
-            {/* Scrollable news list — max 480px, no clip */}
             <div className="overflow-y-auto max-h-[480px] p-3">
               <NewsPanel news={data.news} filterSymbol={symbol} />
             </div>
           </div>
         </div>
 
-        {/* ── Right column: Signal + Market Context ── */}
+        {/* Right: Signal + Context */}
         <div className="space-y-4">
 
-          {/* Decision signal */}
           <div>
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
               <Activity size={11} />
               Decision Signal {ctx.isTransfer ? "— OFW / Remittance" : "— Investors"}
             </div>
             <SignalCard signal={data.signal} symbol={symbol} />
           </div>
 
-          {/* Market context explanation */}
-          <div className="rounded-lg border border-border/60 bg-card p-4">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
+          <div className="rounded-xl border border-border/60 bg-card p-4">
+            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-3">
               How to Read This
             </div>
             <div className="space-y-2 text-xs">
@@ -177,7 +170,7 @@ function MarketPanel({ symbol }: { symbol: string }) {
                 className="text-muted-foreground leading-relaxed"
                 dangerouslySetInnerHTML={{ __html: ctx.paras[1] }}
               />
-              <div className="pt-2 mt-1 border-t border-border/50 text-muted-foreground/60 text-xs italic">
+              <div className="pt-2 mt-1 border-t border-border/50 text-muted-foreground/50 text-[11px] italic">
                 ⚠ For informational purposes only. Not financial advice.
               </div>
             </div>
@@ -193,46 +186,35 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+
       {/* Top Nav */}
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border/60">
-        <div className="flex items-center justify-between px-4 h-12 gap-3">
+        <div className="flex items-center justify-between px-4 h-12 gap-4">
+
           {/* Logo */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <svg
-              aria-label="ForexIQ Logo"
-              viewBox="0 0 32 32"
-              fill="none"
-              className="w-7 h-7"
-            >
+          <div className="flex items-center gap-2.5">
+            <svg aria-label="ForexIQ Logo" viewBox="0 0 32 32" fill="none" className="w-7 h-7">
               <rect width="32" height="32" rx="6" fill="hsl(175 60% 20%)" />
               <path d="M7 22 L13 10 L19 17 L25 8" stroke="#26a69a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M7 22 L13 10 L19 17 L25 8" stroke="#26a69a44" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
               <circle cx="25" cy="8" r="2.5" fill="#26a69a" />
             </svg>
-            <div>
+            <div className="flex items-baseline gap-1.5">
               <span className="font-bold text-foreground tracking-tight text-sm">ForexIQ</span>
-              <span className="text-xs text-muted-foreground ml-1.5 hidden sm:inline">Intelligence Board</span>
+              <span className="text-xs text-muted-foreground/60 hidden sm:inline">Intelligence Board</span>
             </div>
           </div>
 
-          {/* Universal Search */}
-          <div className="flex-1 flex justify-center max-w-sm">
-            <SearchBar onNavigate={(symbol) => setActiveTab(symbol)} />
-          </div>
-
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-              Live Data
-            </span>
-            <span className="text-xs text-muted-foreground hidden lg:inline">
-              EUR · USD · AED · GOLD
-            </span>
+          {/* Live indicator */}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            <span className="hidden sm:inline">Live Data</span>
+            <span className="text-muted-foreground/40 hidden lg:inline ml-1">· EUR · USD · AED · GOLD</span>
           </div>
         </div>
       </header>
 
-      {/* Main Tabs */}
+      {/* Tabs */}
       <main className="flex-1 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
           <div className="border-b border-border/60 bg-background/80 px-4">
@@ -261,19 +243,11 @@ export default function Dashboard() {
         </Tabs>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border/40 px-4 py-2 flex items-center justify-between">
-        <div className="text-xs text-muted-foreground/50">
-          Data: Wise · Frankfurter · Yahoo Finance · No tracking · Signals computed locally
-        </div>
-        <a
-          href="https://www.perplexity.ai/computer"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-        >
-          Created with Perplexity Computer
-        </a>
+      {/* Minimal footer — data attribution only */}
+      <footer className="border-t border-border/40 px-5 py-2">
+        <p className="text-[11px] text-muted-foreground/40">
+          Data: Wise · Frankfurter · Yahoo Finance · Signals computed locally · Not financial advice
+        </p>
       </footer>
     </div>
   );

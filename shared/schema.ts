@@ -78,6 +78,8 @@ export type PeriodSnapshot = {
   close: number;        // closing price of that period
   change: number;
   changePct: number;
+  openDate: string;     // ISO date string e.g. "2026-03-11"
+  closeDate: string;    // ISO date string e.g. "2026-03-11"
 };
 
 export type MarketData = {

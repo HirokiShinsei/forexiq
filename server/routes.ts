@@ -1132,6 +1132,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // Derived from the candle history we already have (no extra API calls)
       const periodStats: PeriodSnapshot[] = [];
       if (candles.length >= 2) {
+        // Helper: Unix seconds → "MMM D, YYYY"
+        const tsToDate = (ts: number) => {
+          const d = new Date(ts * 1000);
+          return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        };
+
         // Yesterday: second-to-last completed candle
         const yday = candles[candles.length - 2];
         const ydayChange = yday.close - yday.open;
@@ -1141,10 +1147,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           close: yday.close,
           change: ydayChange,
           changePct: (ydayChange / yday.open) * 100,
+          openDate:  tsToDate(yday.time),
+          closeDate: tsToDate(yday.time),
         });
 
         // Last Week: open = 6 trading days ago open, close = 2 trading days ago close
-        // (the completed 5-day week window ending the last completed day)
         const weekStartIdx = Math.max(0, candles.length - 7);
         const weekEndIdx   = Math.max(weekStartIdx + 1, candles.length - 3);
         const weekOpen   = candles[weekStartIdx].open;
@@ -1156,6 +1163,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           close: weekClose,
           change: weekChange,
           changePct: (weekChange / weekOpen) * 100,
+          openDate:  tsToDate(candles[weekStartIdx].time),
+          closeDate: tsToDate(candles[weekEndIdx].time),
         });
 
         // Last Month: open = 23 trading days ago open, close = 3 trading days ago close
@@ -1170,6 +1179,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           close: monthClose,
           change: monthChange,
           changePct: (monthChange / monthOpen) * 100,
+          openDate:  tsToDate(candles[monthStartIdx].time),
+          closeDate: tsToDate(candles[monthEndIdx].time),
         });
       }
 
