@@ -771,8 +771,47 @@ async function fetchGoldHistory(days = 90): Promise<OHLCBar[]> {
 interface RateResult { price: number; prevClose: number | null; }
 
 // ── Current spot rate ─────────────────────────────────────────────────
+// ── Wise API: real-time mid-market rates, no key required ─────────────
+async function fetchWiseRate(source: string, target: string): Promise<number | null> {
+  try {
+    const url = `https://wise.com/rates/live?source=${source}&target=${target}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; ForexIQ/1.0)" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (typeof data.value === "number" && data.value > 0) return data.value;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchCurrentRate(base: string, target: string): Promise<RateResult> {
-  // Frankfurter for EUR & USD vs PHP
+  // ── 1. Wise API (primary) — real-time mid-market, no key ──────────────
+  try {
+    const wiseRate = await fetchWiseRate(base, target);
+    if (wiseRate !== null && wiseRate > 0) {
+      // Wise doesn't return prevClose — fetch it from Yahoo Finance
+      let prevClose: number | null = null;
+      try {
+        if (base === "AED") {
+          const [aedQ, usdQ] = await Promise.all([fetchYFQuote("AED=X"), fetchYFQuote("PHP=X")]);
+          if (aedQ?.prevClose && aedQ.prevClose > 1 && usdQ?.prevClose && usdQ.prevClose > 0) {
+            prevClose = (1 / aedQ.prevClose) * usdQ.prevClose;
+          }
+        } else {
+          const yfSym = base === "EUR" ? "EURPHP=X" : "PHP=X";
+          const q = await fetchYFQuote(yfSym);
+          prevClose = q?.prevClose ?? null;
+        }
+      } catch { /* prevClose stays null */ }
+      return { price: wiseRate, prevClose };
+    }
+  } catch { /* fall through */ }
+
+  // ── 2. Frankfurter (ECB daily) — EUR/PHP and USD/PHP ─────────────────
   if (base !== "AED") {
     try {
       const res = await fetch(`https://api.frankfurter.app/latest?base=${base}&symbols=${target}`, {
@@ -782,7 +821,6 @@ async function fetchCurrentRate(base: string, target: string): Promise<RateResul
         const data = await res.json();
         const rate = data.rates?.[target];
         if (typeof rate === "number" && rate > 0) {
-          // Frankfurter doesn’t expose prevClose — get it from Yahoo Finance meta
           const yfSym = base === "EUR" ? "EURPHP=X" : "PHP=X";
           const q = await fetchYFQuote(yfSym);
           return { price: rate, prevClose: q?.prevClose ?? null };
@@ -790,26 +828,17 @@ async function fetchCurrentRate(base: string, target: string): Promise<RateResul
       }
     } catch { /* fall through */ }
 
-    // Yahoo Finance fallback — has both price and prevClose
+    // ── 3. Yahoo Finance fallback ───────────────────────────────────────
     const yfSymbol = base === "EUR" ? "EURPHP=X" : "PHP=X";
     const q = await fetchYFQuote(yfSymbol);
     if (q && q.price > 0) return q;
   }
 
-  // AED/PHP: cross rate via AED=X and PHP=X
-  // AED=X on Yahoo Finance gives the AED/USD rate (USD per 1 AED inverted —
-  // actually Yahoo returns USD count per AED, but AED is pegged to USD at
-  // 1 USD = 3.6725 AED, so AED=X ≈ 3.6725).
-  // Correct formula: AED/PHP = (1/AED=X) * PHP=X
-  // e.g. (1/3.6719) * 59.61 = 0.2723 * 59.61 = 16.23
+  // ── 4. AED/PHP cross-rate via Yahoo Finance ───────────────────────────
   if (base === "AED" && target === "PHP") {
-    const [aedQ, usdQ] = await Promise.all([
-      fetchYFQuote("AED=X"),   // USD per AED (peg ≈ 3.6725)
-      fetchYFQuote("PHP=X"),   // PHP per 1 USD
-    ]);
+    const [aedQ, usdQ] = await Promise.all([fetchYFQuote("AED=X"), fetchYFQuote("PHP=X")]);
     if (aedQ && aedQ.price > 1 && usdQ && usdQ.price > 0) {
       const price = (1 / aedQ.price) * usdQ.price;
-      // Reconstruct prevClose from the two prevCloses using the same cross formula
       const prevClose =
         (aedQ.prevClose && aedQ.prevClose > 1 && usdQ.prevClose && usdQ.prevClose > 0)
           ? (1 / aedQ.prevClose) * usdQ.prevClose
@@ -819,7 +848,7 @@ async function fetchCurrentRate(base: string, target: string): Promise<RateResul
     return { price: 16.22, prevClose: null };
   }
 
-  // Hardcoded realistic fallbacks
+  // ── 5. Hardcoded fallbacks ────────────────────────────────────────────
   if (base === "EUR" && target === "PHP") return { price: 68.6, prevClose: null };
   if (base === "USD" && target === "PHP") return { price: 59.6, prevClose: null };
   if (base === "AED" && target === "PHP") return { price: 16.22, prevClose: null };
@@ -1092,30 +1121,33 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           changePct: (ydayChange / yday.open) * 100,
         });
 
-        // Last Week: candle ~5 trading days ago (≈7 calendar days)
-        const weekIdx = Math.max(0, candles.length - 6);
-        const weekCandle = candles[weekIdx];
-        const weekClose = candles[candles.length - 2].close; // prev day close as week-end
-        const weekChange = weekClose - weekCandle.open;
+        // Last Week: open = candle ~5 trading days ago, close = that candle's own close
+        // This shows what happened DURING that week window, not vs today
+        const weekStartIdx = Math.max(0, candles.length - 6);
+        const weekEndIdx   = Math.max(weekStartIdx + 1, candles.length - 2); // last completed day
+        const weekOpen   = candles[weekStartIdx].open;
+        const weekClose  = candles[weekEndIdx].close;
+        const weekChange = weekClose - weekOpen;
         periodStats.push({
           label: "Last Week",
-          open: weekCandle.open,
+          open: weekOpen,
           close: weekClose,
           change: weekChange,
-          changePct: (weekChange / weekCandle.open) * 100,
+          changePct: (weekChange / weekOpen) * 100,
         });
 
-        // Last Month: candle ~22 trading days ago (≈30 calendar days)
-        const monthIdx = Math.max(0, candles.length - 23);
-        const monthCandle = candles[monthIdx];
-        const monthClose = candles[candles.length - 2].close;
-        const monthChange = monthClose - monthCandle.open;
+        // Last Month: open = candle ~22 trading days ago, close = last completed day
+        const monthStartIdx = Math.max(0, candles.length - 23);
+        const monthEndIdx   = Math.max(monthStartIdx + 1, candles.length - 2);
+        const monthOpen   = candles[monthStartIdx].open;
+        const monthClose  = candles[monthEndIdx].close;
+        const monthChange = monthClose - monthOpen;
         periodStats.push({
           label: "Last Month",
-          open: monthCandle.open,
+          open: monthOpen,
           close: monthClose,
           change: monthChange,
-          changePct: (monthChange / monthCandle.open) * 100,
+          changePct: (monthChange / monthOpen) * 100,
         });
       }
 
