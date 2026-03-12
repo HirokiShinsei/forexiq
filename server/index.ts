@@ -6,6 +6,42 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import https from "https";
 
+// ──────────────────────────────────────────────
+// CORS allow-list — built once at startup
+// ──────────────────────────────────────────────
+function getAllowedOrigins(): string[] {
+  const origins: string[] = [
+    "http://localhost:5000",
+    "http://localhost:3000",
+    "http://127.0.0.1:5000",
+  ];
+  if (process.env.ALLOWED_ORIGIN)   origins.push(process.env.ALLOWED_ORIGIN.trim());
+  if (process.env.ALLOWED_ORIGIN_2) origins.push(process.env.ALLOWED_ORIGIN_2.trim());
+  return origins;
+}
+const ALLOWED_ORIGINS = getAllowedOrigins();
+
+// Reusable CORS middleware — attached BEFORE Helmet, rate-limiters, and routes
+function applyCors(req: Request, res: Response, next: NextFunction) {
+  const origin = req.headers.origin as string | undefined;
+
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Credentials", "false");
+  }
+
+  // Preflight — short-circuit immediately
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Max-Age", "86400");
+    return res.sendStatus(204);
+  }
+
+  next();
+}
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -16,17 +52,29 @@ declare module "http" {
 }
 
 // ──────────────────────────────────────────────
-// Security Headers (Helmet)
+// Middleware order matters:
+//   1. CORS  (must run first — before Helmet can strip headers)
+//   2. Helmet (security headers)
+//   3. Rate limiting
+//   4. Body parsing
+//   5. Routes
 // ──────────────────────────────────────────────
+
+// 1. CORS — applied globally so it runs before everything else.
+//    The handler only sets headers for origins in ALLOWED_ORIGINS;
+//    all other requests pass through without CORS headers.
+app.use("/api/", applyCors);
+app.options("/api/*", applyCors); // explicit OPTIONS catch-all
+
+// 2. Security Headers (Helmet)
 app.use(
   helmet({
-    // Content Security Policy — only allow resources from self + known CDNs
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"], // needed for Vite HMR in dev + inlined chunks
-        styleSrc: ["'self'", "'unsafe-inline'"],  // needed for Tailwind inline styles
-        fontSrc: ["'self'", "data:"],              // no Google Fonts — system fonts only
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'", "data:"],
         imgSrc: ["'self'", "data:", "blob:"],
         connectSrc: [
           "'self'",
@@ -41,22 +89,20 @@ app.use(
         upgradeInsecureRequests: [],
       },
     },
-    // Force HTTPS in production
     hsts: process.env.NODE_ENV === "production"
       ? { maxAge: 31536000, includeSubDomains: true, preload: true }
       : false,
-    // Prevent MIME type sniffing
     noSniff: true,
-    // Prevent clickjacking
     frameguard: { action: "deny" },
-    // Hide Express fingerprint
     hidePoweredBy: true,
-    // XSS filter
     xssFilter: true,
-    // Referrer policy — don't leak URL to external requests
     referrerPolicy: { policy: "no-referrer" },
-    // Permissions policy — deny access to sensitive browser APIs
     permittedCrossDomainPolicies: false,
+    // CRITICAL: crossOriginResourcePolicy must be disabled for API routes.
+    // The default 'same-origin' policy causes Helmet to send
+    // Cross-Origin-Resource-Policy: same-origin on API responses, which
+    // makes Chrome/Firefox ignore our Access-Control-Allow-Origin header.
+    crossOriginResourcePolicy: false,
     crossOriginEmbedderPolicy: false, // needed for LW Charts canvas
     crossOriginOpenerPolicy: false,
   })
@@ -89,66 +135,6 @@ app.use("/api/news", newsFetchLimiter);
 app.use("/api/search", newsFetchLimiter);
 
 // ──────────────────────────────────────────────
-// CORS — allow Cloudflare Pages frontend to call
-// this Render backend. All API fetches are made
-// server-side to external APIs (no browser CORS
-// needed for those), but the frontend→backend
-// calls DO cross origins and need explicit CORS.
-// ──────────────────────────────────────────────
-
-// Build the allowed origins list from env + dev defaults
-function getAllowedOrigins(): string[] {
-  const origins: string[] = [
-    "http://localhost:5000",
-    "http://localhost:3000",
-    "http://127.0.0.1:5000",
-  ];
-
-  // ALLOWED_ORIGIN: primary production origin (Cloudflare Pages URL)
-  // e.g. https://forexiq.pages.dev  OR  https://yourdomain.com
-  if (process.env.ALLOWED_ORIGIN) {
-    origins.push(process.env.ALLOWED_ORIGIN);
-  }
-
-  // ALLOWED_ORIGIN_2: optional second origin (custom domain on Pages)
-  if (process.env.ALLOWED_ORIGIN_2) {
-    origins.push(process.env.ALLOWED_ORIGIN_2);
-  }
-
-  return origins;
-}
-
-app.use("/api/", (req: Request, res: Response, next: NextFunction) => {
-  const origin = req.headers.origin;
-  const allowedOrigins = getAllowedOrigins();
-
-  // Preflight — respond immediately with CORS headers
-  if (req.method === "OPTIONS") {
-    if (!origin || allowedOrigins.includes(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin || "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Max-Age", "86400");
-    }
-    return res.sendStatus(204);
-  }
-
-  // Actual request — set CORS header if origin is allowed
-  if (!origin) {
-    // Server-to-server / Postman / health checks — no origin header, allow
-    return next();
-  }
-
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    return next();
-  }
-
-  // Unknown origin — reject
-  return res.status(403).json({ error: "Forbidden" });
-});
-
 // ──────────────────────────────────────────────
 // Body Parsing
 // ──────────────────────────────────────────────
