@@ -16,8 +16,11 @@ services:
     region: singapore        # Closest to the Philippines (SEA)
     plan: free
 
-    # Build: install deps + compile TypeScript → dist/index.cjs
-    buildCommand: npm ci && npm run build
+    # Build: install ALL deps (including devDeps for tsx/esbuild/vite)
+    # then compile TypeScript → dist/index.cjs
+    # --include=dev ensures tsx, esbuild, vite are available at build time.
+    # The production server (node dist/index.cjs) doesn't need them at runtime.
+    buildCommand: npm ci --include=dev && npm run build
 
     # Start the compiled production server
     startCommand: node dist/index.cjs
