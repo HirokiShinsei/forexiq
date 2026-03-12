@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────────────
+# Cloudflare Workers deployment config
+# This deploys the Express backend as a Cloudflare Worker
+# and serves the static frontend via Cloudflare Pages.
+#
+# Prerequisites:
+#   npm install -g wrangler
+#   wrangler login
+# ──────────────────────────────────────────────────────
+
+name = "forexiq-api"
+main = "dist/index.cjs"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static assets (frontend) — served from Cloudflare's CDN
+[assets]
+directory = "./dist/public"
+binding = "ASSETS"
+
+# Environment variables (set secrets via: wrangler secret put KEY)
+[vars]
+NODE_ENV = "production"
+# ALLOWED_ORIGIN = "https://yourdomain.pages.dev"   # set to your domain
+
+# CPU/memory limits for the Worker
+[limits]
+cpu_ms = 50
+
+# ──────────────────────────────────────────────────────
+# Cloudflare Pages alternative (static frontend only)
+# Use this if you want to split frontend and backend:
+#   - Frontend on Cloudflare Pages (free)
+#   - Backend on a VPS / Railway / Render (runs Node.js)
+# ──────────────────────────────────────────────────────
