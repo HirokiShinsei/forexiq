@@ -217,13 +217,14 @@ export default function Dashboard() {
       {/* Tabs */}
       <main className="flex-1 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <div className="border-b border-border/60 bg-background/80 px-4">
-            <TabsList className="bg-transparent h-auto p-0 gap-0">
+          {/* Scrollable tab bar — works on any screen width */}
+          <div className="border-b border-border/60 bg-background/80 overflow-x-auto scrollbar-none">
+            <TabsList className="bg-transparent h-auto p-0 gap-0 flex w-max min-w-full">
               {SYMBOLS.map(sym => (
                 <TabsTrigger
                   key={sym.id}
                   value={sym.id}
-                  className="px-4 py-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary text-muted-foreground hover:text-foreground transition-colors text-sm font-medium"
+                  className="flex-shrink-0 px-5 py-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary text-muted-foreground hover:text-foreground transition-colors text-sm font-medium whitespace-nowrap"
                   data-testid={`tab-${sym.id}`}
                 >
                   <span className="mr-1.5">{sym.emoji}</span>

@@ -343,3 +343,12 @@
 /* Ticker tape pulse */
 @keyframes pulse-green { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .live-dot { animation: pulse-green 2s ease-in-out infinite; }
+
+/* ── Tab bar: hide scrollbar visually while keeping scroll behaviour ── */
+.scrollbar-none {
+  -ms-overflow-style: none;   /* IE/Edge */
+  scrollbar-width: none;      /* Firefox */
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;              /* Chrome/Safari/Opera */
+}

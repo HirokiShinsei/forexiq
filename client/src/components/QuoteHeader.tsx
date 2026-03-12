@@ -11,9 +11,10 @@ interface Props {
 }
 
 const SYMBOL_LABELS: Record<string, { full: string; base: string; quote: string }> = {
-  EUR_PHP: { full: "Euro / Philippine Peso", base: "EUR", quote: "PHP" },
-  USD_PHP: { full: "US Dollar / Philippine Peso", base: "USD", quote: "PHP" },
-  XAU_USD: { full: "Gold (Troy Oz) / US Dollar", base: "XAU", quote: "USD" },
+  EUR_PHP: { full: "Euro / Philippine Peso",          base: "EUR", quote: "PHP" },
+  USD_PHP: { full: "US Dollar / Philippine Peso",     base: "USD", quote: "PHP" },
+  AED_PHP: { full: "UAE Dirham / Philippine Peso",    base: "AED", quote: "PHP" },
+  XAU_USD: { full: "Gold (Troy Oz) / US Dollar",      base: "XAU", quote: "USD" },
 };
 
 function formatPrice(price: number, symbol: string) {
