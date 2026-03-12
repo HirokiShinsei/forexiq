@@ -71,6 +71,15 @@ export type NewsItem = {
   relevance: string[]; // e.g. ["EUR/PHP", "GOLD"]
 };
 
+// Period snapshot: open/close/change for a named time window
+export type PeriodSnapshot = {
+  label: string;        // "Yesterday" | "Last Week" | "Last Month"
+  open: number;
+  close: number;        // closing price of that period
+  change: number;
+  changePct: number;
+};
+
 export type MarketData = {
   symbol: string;
   quote: TickerQuote;
@@ -78,4 +87,5 @@ export type MarketData = {
   indicators: TechnicalIndicators;
   signal: Signal;
   news: NewsItem[];
+  periodStats?: PeriodSnapshot[];  // yesterday, last week, last month
 };

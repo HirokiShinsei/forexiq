@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor } from "../shared/schema";
+import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot } from "../shared/schema";
 
 // ──────────────────────────────────────────────
 // Technical Analysis Helpers
@@ -1077,7 +1077,49 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const news = await fetchNews(newsQuery);
       const signal = generateSignal(symbol, quote, indicators, candles, news);
 
-      res.json({ symbol, quote, candles, indicators, signal, news });
+      // ── Period snapshots: Yesterday / Last Week / Last Month ──────────
+      // Derived from the candle history we already have (no extra API calls)
+      const periodStats: PeriodSnapshot[] = [];
+      if (candles.length >= 2) {
+        // Yesterday: second-to-last completed candle
+        const yday = candles[candles.length - 2];
+        const ydayChange = yday.close - yday.open;
+        periodStats.push({
+          label: "Yesterday",
+          open: yday.open,
+          close: yday.close,
+          change: ydayChange,
+          changePct: (ydayChange / yday.open) * 100,
+        });
+
+        // Last Week: candle ~5 trading days ago (≈7 calendar days)
+        const weekIdx = Math.max(0, candles.length - 6);
+        const weekCandle = candles[weekIdx];
+        const weekClose = candles[candles.length - 2].close; // prev day close as week-end
+        const weekChange = weekClose - weekCandle.open;
+        periodStats.push({
+          label: "Last Week",
+          open: weekCandle.open,
+          close: weekClose,
+          change: weekChange,
+          changePct: (weekChange / weekCandle.open) * 100,
+        });
+
+        // Last Month: candle ~22 trading days ago (≈30 calendar days)
+        const monthIdx = Math.max(0, candles.length - 23);
+        const monthCandle = candles[monthIdx];
+        const monthClose = candles[candles.length - 2].close;
+        const monthChange = monthClose - monthCandle.open;
+        periodStats.push({
+          label: "Last Month",
+          open: monthCandle.open,
+          close: monthClose,
+          change: monthChange,
+          changePct: (monthChange / monthCandle.open) * 100,
+        });
+      }
+
+      res.json({ symbol, quote, candles, indicators, signal, news, periodStats });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to fetch market data" });

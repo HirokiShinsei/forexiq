@@ -4,16 +4,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import CandlestickChart from "../components/charts/CandlestickChart";
-import RSIChart from "../components/charts/RSIChart";
-import MACDChart from "../components/charts/MACDChart";
 import SignalCard from "../components/SignalCard";
-import IndicatorsPanel from "../components/IndicatorsPanel";
 import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
 import SearchBar from "../components/SearchBar";
+import PriceHistoryPanel from "../components/PriceHistoryPanel";
+import IndicatorsSummary from "../components/IndicatorsSummary";
 import type { MarketData } from "../../../shared/schema";
-import { AlertCircle, BarChart2, Newspaper, Activity, TrendingUp } from "lucide-react";
+import { AlertCircle, Activity, Newspaper } from "lucide-react";
 import { apiRequest } from "../lib/queryClient";
 
 const SYMBOLS = [
@@ -40,10 +38,9 @@ function LoadingSkeleton() {
     <div className="space-y-4 p-4">
       <Skeleton className="h-20 w-full" />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 space-y-2">
-          <Skeleton className="h-80 w-full" />
-          <Skeleton className="h-28 w-full" />
-          <Skeleton className="h-28 w-full" />
+        <div className="lg:col-span-2 space-y-3">
+          <Skeleton className="h-52 w-full" />
+          <Skeleton className="h-64 w-full" />
         </div>
         <div className="space-y-4">
           <Skeleton className="h-52 w-full" />
@@ -67,7 +64,7 @@ const MARKET_CONTEXT: Record<string, { isTransfer: boolean; paras: [string, stri
     isTransfer: true,
     paras: [
       "A <strong>higher</strong> USD/PHP rate means <strong>more Philippine Pesos</strong> per US Dollar sent — favorable for OFWs in the US sending remittances.",
-      "The <strong>SEND NOW</strong> signal triggers when conditions are optimal for transfers. Monitor <strong>Fed rate decisions</strong> and <strong>Iran-US tensions</strong> — both directly impact this pair.",
+      "The <strong>SEND NOW</strong> signal triggers when conditions are optimal for transfers. Monitor <strong>Fed rate decisions</strong> and <strong>global risk events</strong> — both directly impact this pair.",
     ],
   },
   AED_PHP: {
@@ -81,14 +78,13 @@ const MARKET_CONTEXT: Record<string, { isTransfer: boolean; paras: [string, stri
     isTransfer: false,
     paras: [
       "Gold (XAU/USD) is driven by <strong>safe-haven demand</strong>, USD strength, inflation expectations, geopolitical tensions, and central bank buying.",
-      "<strong>BUY</strong> signals suggest gold may rally. <strong>SELL</strong> signals suggest a pullback. Always consider macro factors — the Iran-US conflict and BNP/JPMorgan's $6,000 target are key drivers.",
+      "<strong>BUY</strong> signals suggest gold may rally — favorable for accumulating physical gold or gold funds. <strong>SELL / HOLD</strong> signals help you decide when to liquidate or wait.",
     ],
   },
 };
 
 function MarketPanel({ symbol }: { symbol: string }) {
   const { data, isLoading, error, refetch, isFetching } = useMarketData(symbol);
-  const [subTab, setSubTab] = useState<"chart" | "news">("chart");
 
   if (isLoading) return <LoadingSkeleton />;
 
@@ -108,9 +104,13 @@ function MarketPanel({ symbol }: { symbol: string }) {
   if (!data) return null;
 
   const ctx = MARKET_CONTEXT[symbol] ?? MARKET_CONTEXT["XAU_USD"];
+  const filteredNews = data.news.filter(n =>
+    n.relevance.includes(symbol.replace("_", "/"))
+  );
 
   return (
     <div className="p-4 space-y-4">
+      {/* Live quote header */}
       <QuoteHeader
         quote={data.quote}
         label={symbol.replace("_", "/")}
@@ -118,133 +118,68 @@ function MarketPanel({ symbol }: { symbol: string }) {
         onRefresh={() => refetch()}
       />
 
+      {/* Main two-column grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {/* Left: Chart + Sub-indicators */}
-        <div className="xl:col-span-2 space-y-0">
-          <div className="flex gap-1 mb-2">
-            <button
-              onClick={() => setSubTab("chart")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors ${
-                subTab === "chart"
-                  ? "bg-primary/20 text-primary border border-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-              }`}
-              data-testid="tab-chart"
-            >
-              <BarChart2 size={12} /> Chart &amp; Indicators
-            </button>
-            <button
-              onClick={() => setSubTab("news")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors ${
-                subTab === "news"
-                  ? "bg-primary/20 text-primary border border-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-              }`}
-              data-testid="tab-news"
-            >
-              <Newspaper size={12} /> News Feed
-              {data.news.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-primary/20 text-primary text-xs">
-                  {data.news.length}
+
+        {/* ── Left column: Price History + News ── */}
+        <div className="xl:col-span-2 space-y-4">
+
+          {/* Price history: live / yesterday / last week / last month */}
+          <PriceHistoryPanel
+            quote={data.quote}
+            periodStats={data.periodStats}
+            symbol={symbol}
+          />
+
+          {/* Technical snapshot */}
+          <IndicatorsSummary
+            indicators={data.indicators}
+            quote={data.quote}
+            symbol={symbol}
+          />
+
+          {/* Inline news — filtered to this exchange only */}
+          <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-border/50 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Newspaper size={12} className="text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Related News
+                </span>
+                <span className="text-xs text-muted-foreground/60">
+                  — {symbol.replace("_", "/")} events
+                </span>
+              </div>
+              {filteredNews.length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium">
+                  {filteredNews.length}
                 </span>
               )}
-            </button>
-          </div>
-
-          {subTab === "chart" ? (
-            <>
-              <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <TrendingUp size={12} />
-                    <span className="font-medium">Candlestick — 90 Day</span>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded" /> SMA20</span>
-                    <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded" /> SMA50</span>
-                    <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-indigo-400 inline-block rounded border-dashed" /> BB</span>
-                  </div>
-                </div>
-                <CandlestickChart
-                  candles={data.candles}
-                  indicators={data.indicators}
-                  symbol={symbol}
-                />
-              </div>
-
-              <div className="rounded-lg border border-border/60 bg-card overflow-hidden mt-2">
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground">
-                  <Activity size={12} />
-                  <span className="font-medium">RSI (14)</span>
-                  <span className="ml-auto">
-                    {data.indicators.rsi !== null ? (
-                      <span className={
-                        data.indicators.rsi > 70 ? "text-red-400" :
-                        data.indicators.rsi < 30 ? "text-green-400" :
-                        "text-amber-400"
-                      }>
-                        {data.indicators.rsi.toFixed(1)}
-                        {data.indicators.rsi > 70 ? " · Overbought" :
-                         data.indicators.rsi < 30 ? " · Oversold" : " · Neutral"}
-                      </span>
-                    ) : "—"}
-                  </span>
-                </div>
-                <RSIChart candles={data.candles} />
-              </div>
-
-              <div className="rounded-lg border border-border/60 bg-card overflow-hidden mt-2">
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 text-xs text-muted-foreground">
-                  <Activity size={12} />
-                  <span className="font-medium">MACD (12,26,9)</span>
-                  <span className="ml-auto">
-                    {data.indicators.macd ? (
-                      <span className={data.indicators.macd.histogram > 0 ? "text-green-400" : "text-red-400"}>
-                        Histogram: {data.indicators.macd.histogram > 0 ? "+" : ""}{data.indicators.macd.histogram.toFixed(5)}
-                      </span>
-                    ) : "—"}
-                  </span>
-                </div>
-                <MACDChart candles={data.candles} />
-              </div>
-            </>
-          ) : (
-            <div className="rounded-lg border border-border/60 bg-card p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Newspaper size={14} className="text-muted-foreground" />
-                <h3 className="text-sm font-medium">Market News</h3>
-                <span className="text-xs text-muted-foreground">
-                  — events affecting {symbol.replace("_", "/")}
-                </span>
-              </div>
-              <ScrollArea className="h-[520px] pr-2">
-                <NewsPanel news={data.news} filterSymbol={symbol} />
-              </ScrollArea>
             </div>
-          )}
+            <ScrollArea className="max-h-96">
+              <div className="p-3">
+                <NewsPanel news={data.news} filterSymbol={symbol} />
+              </div>
+            </ScrollArea>
+          </div>
         </div>
 
-        {/* Right: Signal + Indicators */}
+        {/* ── Right column: Signal + Market Context ── */}
         <div className="space-y-4">
+
+          {/* Decision signal */}
           <div>
             <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Activity size={11} />
-              Decision Signal {ctx.isTransfer ? "— for OFW / Remittance" : "— for Traders"}
+              Decision Signal {ctx.isTransfer ? "— OFW / Remittance" : "— Investors"}
             </div>
             <SignalCard signal={data.signal} symbol={symbol} />
           </div>
 
-          <div className="rounded-lg border border-border/60 bg-card p-4">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <BarChart2 size={11} />
-              Technical Indicators
-            </div>
-            <IndicatorsPanel indicators={data.indicators} price={data.quote.price} />
-          </div>
-
+          {/* Market context explanation */}
           <div className="rounded-lg border border-border/60 bg-card p-4">
             <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-              Market Context
+              How to Read This
             </div>
             <div className="space-y-2 text-xs">
               <p
@@ -342,7 +277,7 @@ export default function Dashboard() {
       {/* Footer */}
       <footer className="border-t border-border/40 px-4 py-2 flex items-center justify-between">
         <div className="text-xs text-muted-foreground/50">
-          Data: Frankfurter API · gold-api.com · NewsData.io · No tracking · Indicators computed locally
+          Data: Frankfurter · Yahoo Finance · No tracking · Signals computed locally
         </div>
         <a
           href="https://www.perplexity.ai/computer"
