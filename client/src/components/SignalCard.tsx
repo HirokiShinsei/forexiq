@@ -81,7 +81,7 @@ const CATEGORY_LABEL: Record<MacroFactor["category"], string> = {
 const IMPACT_COLOR: Record<MacroFactor["impact"], string> = {
   BULLISH: "text-emerald-400",
   BEARISH: "text-red-400",
-  NEUTRAL: "text-zinc-400",
+  NEUTRAL: "text-slate-300",
 };
 
 const IMPACT_BG: Record<MacroFactor["impact"], string> = {
@@ -106,7 +106,7 @@ function ScoreBar({
   const isPos = value >= 0;
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs opacity-50 w-16 shrink-0">{label}</span>
+      <span className="text-xs text-slate-400 w-16 shrink-0">{label}</span>
       <div className="flex-1 relative h-1.5 rounded-full bg-white/10 overflow-hidden">
         {/* center line */}
         <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20" />
@@ -135,10 +135,10 @@ function SentimentBadge({ score, label }: { score: number; label: string }) {
       ? { text: "BULLISH", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25" }
       : score <= -30
       ? { text: "BEARISH", cls: "bg-red-500/15 text-red-400 border-red-500/25" }
-      : { text: "NEUTRAL", cls: "bg-zinc-500/15 text-zinc-400 border-zinc-500/25" };
+      : { text: "NEUTRAL", cls: "bg-zinc-500/15 text-slate-300 border-zinc-500/25" };
   return (
     <div className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs ${tier.cls}`}>
-      <span className="opacity-60">{label}</span>
+      <span className="opacity-85">{label}</span>
       <span className="font-semibold">{tier.text}</span>
       <span className="font-tabular opacity-75">
         {score > 0 ? "+" : ""}
@@ -187,16 +187,16 @@ export default function SignalCard({ signal, symbol }: Props) {
         <div>
           <div className="flex items-center gap-2">
             <span className="font-bold text-lg font-tabular">{signal.label}</span>
-            <span className="flex items-center gap-1 text-xs opacity-75">
+            <span className="flex items-center gap-1 text-xs opacity-90">
               <StrengthIcon size={12} />
               {signal.strength}
             </span>
           </div>
-          <p className="text-xs opacity-70">{cfg.desc}</p>
+          <p className="text-xs opacity-85">{cfg.desc}</p>
         </div>
         <div className="ml-auto text-right">
           <div className="text-2xl font-bold font-tabular">{signal.confidence}%</div>
-          <div className="text-xs opacity-60">confidence</div>
+          <div className="text-xs opacity-80">confidence</div>
         </div>
       </div>
 
@@ -211,7 +211,7 @@ export default function SignalCard({ signal, symbol }: Props) {
       {/* ── Composite score panel ── */}
       {hasScores && (
         <div className="bg-black/20 rounded-md p-3 mb-3 space-y-2">
-          <div className="text-xs font-medium opacity-50 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
             <Activity size={10} />
             Signal Scores
           </div>
@@ -243,14 +243,14 @@ export default function SignalCard({ signal, symbol }: Props) {
               label="News"
             />
           </div>
-          <p className="text-xs opacity-40 pt-0.5">
+          <p className="text-xs text-slate-500 pt-0.5">
             Weighted: 60% Technical · 40% News &amp; Macro
           </p>
         </div>
       )}
 
       {/* ── Horizon ── */}
-      <div className="flex items-center gap-2 text-xs mb-3 opacity-80">
+      <div className="flex items-center gap-2 text-xs mb-3">
         <Clock size={12} />
         <span className="font-medium">
           {isTransfer ? "Best window:" : "Suggested horizon:"}
@@ -261,12 +261,12 @@ export default function SignalCard({ signal, symbol }: Props) {
       {/* ── Technical reasoning ── */}
       {techBullets.length > 0 && (
         <div className="space-y-1.5 mb-3">
-          <div className="text-xs font-medium opacity-50 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
             <BarChart3 size={10} />
             Technical
           </div>
           {techBullets.slice(0, 3).map((reason, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs opacity-80">
+            <div key={i} className="flex items-start gap-2 text-xs">
               <ShieldAlert size={10} className="mt-0.5 flex-shrink-0" />
               <span>{reason}</span>
             </div>
@@ -277,12 +277,12 @@ export default function SignalCard({ signal, symbol }: Props) {
       {/* ── Macro/News reasoning ── */}
       {macroBullets.length > 0 && (
         <div className="space-y-1.5 mb-3">
-          <div className="text-xs font-medium opacity-50 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
             <Newspaper size={10} />
             Macro &amp; News
           </div>
           {macroBullets.slice(0, 5).map((reason, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs opacity-80">
+            <div key={i} className="flex items-start gap-2 text-xs">
               <Globe size={10} className="mt-0.5 flex-shrink-0" />
               <span>{reason}</span>
             </div>
@@ -293,7 +293,7 @@ export default function SignalCard({ signal, symbol }: Props) {
       {/* ── Macro factors list ── */}
       {hasMacro && (
         <div className="space-y-1.5">
-          <div className="text-xs font-medium opacity-50 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
             <Globe size={10} />
             Macro Factors
           </div>
@@ -306,13 +306,13 @@ export default function SignalCard({ signal, symbol }: Props) {
               >
                 <div className="flex items-center justify-between mb-0.5">
                   <div className="flex items-center gap-1.5">
-                    <CatIcon size={10} className="opacity-60" />
-                    <span className="text-xs font-semibold opacity-90">
+                    <CatIcon size={10} className="opacity-75" />
+                    <span className="text-xs font-semibold">
                       {factor.title}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs opacity-40">
+                    <span className="text-xs text-slate-400">
                       {CATEGORY_LABEL[factor.category]}
                     </span>
                     <span
@@ -320,12 +320,12 @@ export default function SignalCard({ signal, symbol }: Props) {
                     >
                       {factor.impact}
                     </span>
-                    <span className="text-xs opacity-40">
+                    <span className="text-xs text-slate-400">
                       {"●".repeat(factor.weight)}
                     </span>
                   </div>
                 </div>
-                <p className="text-xs opacity-60 leading-relaxed">{factor.detail}</p>
+                <p className="text-xs text-slate-300 leading-relaxed">{factor.detail}</p>
               </div>
             );
           })}

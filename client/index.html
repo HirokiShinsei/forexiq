@@ -29,7 +29,10 @@
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="alternate icon" href="/favicon.svg" />
+    <!-- Apple devices don’t support SVG favicons — use a themed PNG fallback -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f1117" />
 
     <title>ForexIQ — Forex &amp; Gold Intelligence Board</title>
     <meta name="description" content="Real-time EUR/PHP, USD/PHP, AED/PHP and gold price intelligence dashboard with technical indicators, decision signals, and news analysis." />

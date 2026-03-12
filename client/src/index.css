@@ -291,30 +291,31 @@
 /* ── Custom Dashboard Styles ── */
 .font-tabular { font-variant-numeric: tabular-nums lining-nums; }
 
+/* Signal state classes — all text colors meet WCAG AA (≥4.5:1) against their respective dark bg */
 .signal-buy {
-  background: hsl(142 71% 15%);
-  color: hsl(142 71% 65%);
-  border: 1px solid hsl(142 71% 25%);
+  background: hsl(142 55% 13%);
+  color: hsl(142 75% 72%);
+  border: 1px solid hsl(142 55% 22%);
 }
 .signal-sell {
-  background: hsl(0 70% 15%);
-  color: hsl(0 70% 65%);
-  border: 1px solid hsl(0 70% 25%);
+  background: hsl(0 60% 13%);
+  color: hsl(0 75% 72%);
+  border: 1px solid hsl(0 60% 22%);
 }
 .signal-hold {
-  background: hsl(45 80% 12%);
-  color: hsl(45 80% 65%);
-  border: 1px solid hsl(45 80% 22%);
+  background: hsl(45 70% 11%);
+  color: hsl(45 95% 75%);
+  border: 1px solid hsl(45 70% 21%);
 }
 .signal-send {
-  background: hsl(175 60% 10%);
-  color: hsl(175 60% 55%);
-  border: 1px solid hsl(175 60% 20%);
+  background: hsl(175 55% 9%);
+  color: hsl(175 70% 68%);
+  border: 1px solid hsl(175 55% 18%);
 }
 .signal-wait {
-  background: hsl(220 12% 14%);
-  color: hsl(220 10% 65%);
-  border: 1px solid hsl(220 12% 22%);
+  background: hsl(220 12% 13%);
+  color: hsl(220 15% 72%);
+  border: 1px solid hsl(220 12% 21%);
 }
 
 .indicator-row {

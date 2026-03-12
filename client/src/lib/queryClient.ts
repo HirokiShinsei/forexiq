@@ -51,9 +51,13 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
+      // Market data hooks override these with their own values.
+      // We keep defaults permissive (short staleTime) so market
+      // data is always re-fetched when the tab is re-focused or
+      // after the 5-minute refetch interval fires.
       refetchInterval: false,
-      refetchOnWindowFocus: false,
-      staleTime: Infinity,
+      refetchOnWindowFocus: true,
+      staleTime: 60 * 1000,  // 1 min — data older than 1min triggers a bg refetch
       retry: false,
     },
     mutations: {

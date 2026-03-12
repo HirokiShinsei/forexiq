@@ -564,19 +564,29 @@ const YF_HEADERS = {
   "Accept": "application/json",
 };
 
-// ── Yahoo Finance: current spot price ────────────────────────────────
-async function fetchYFPrice(symbol: string): Promise<number | null> {
+// ── Yahoo Finance: current spot price + previous close ───────────────
+interface YFQuote { price: number; prevClose: number | null; }
+
+async function fetchYFQuote(symbol: string): Promise<YFQuote | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`;
     const res = await fetch(url, { headers: YF_HEADERS });
     if (!res.ok) return null;
     const data = await res.json();
     const meta = data?.chart?.result?.[0]?.meta ?? {};
     const price = meta.regularMarketPrice ?? meta.currentPrice ?? null;
-    return typeof price === "number" && price > 0 ? price : null;
+    if (typeof price !== "number" || price <= 0) return null;
+    // previousClose from meta (most reliable), fall back to second-to-last close
+    const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? null;
+    return { price, prevClose };
   } catch {
     return null;
   }
+}
+
+async function fetchYFPrice(symbol: string): Promise<number | null> {
+  const q = await fetchYFQuote(symbol);
+  return q?.price ?? null;
 }
 
 // ── Yahoo Finance: OHLC history (returns real candle data) ─────────────
@@ -731,11 +741,10 @@ async function fetchCurrentRate(base: string, target: string): Promise<number> {
 }
 
 // ── Gold spot: Yahoo Finance GC=F ─────────────────────────────────────
-async function fetchGoldSpot(): Promise<number> {
-  const price = await fetchYFPrice("GC=F");
-  if (price && price > 1000) return price;
-  // Realistic fallback: gold ~$3150-3250/oz in March 2026
-  return 3180 + (Math.random() - 0.5) * 100;
+async function fetchGoldSpot(): Promise<RateResult> {
+  const q = await fetchYFQuote("GC=F");
+  if (q && q.price > 1000) return q;
+  return { price: 3180 + (Math.random() - 0.5) * 100, prevClose: null };
 }
 
 function generateMockCandles(days: number, basePrice: number, volatility: number): OHLCBar[] {
@@ -914,28 +923,56 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       let price = 0;
       let newsQuery = "";
 
+      let rateResult: RateResult | null = null;
+
       if (symbol === "EUR_PHP") {
-        candles = await fetchForexHistory("EUR", "PHP", 90);
-        price = await fetchCurrentRate("EUR", "PHP");
+        [candles, rateResult] = await Promise.all([
+          fetchForexHistory("EUR", "PHP", 90),
+          fetchCurrentRate("EUR", "PHP"),
+        ]);
         newsQuery = "euro philippine peso exchange rate ECB BSP";
       } else if (symbol === "USD_PHP") {
-        candles = await fetchForexHistory("USD", "PHP", 90);
-        price = await fetchCurrentRate("USD", "PHP");
+        [candles, rateResult] = await Promise.all([
+          fetchForexHistory("USD", "PHP", 90),
+          fetchCurrentRate("USD", "PHP"),
+        ]);
         newsQuery = "US dollar philippine peso exchange rate Fed BSP";
       } else if (symbol === "AED_PHP") {
-        candles = await fetchForexHistory("AED", "PHP", 90);
-        price = await fetchCurrentRate("AED", "PHP");
+        [candles, rateResult] = await Promise.all([
+          fetchForexHistory("AED", "PHP", 90),
+          fetchCurrentRate("AED", "PHP"),
+        ]);
         newsQuery = "UAE dirham philippine peso exchange rate OFW remittances Dubai";
       } else if (symbol === "XAU_USD") {
-        candles = await fetchGoldHistory(90);
-        price = await fetchGoldSpot();
+        [candles, rateResult] = await Promise.all([
+          fetchGoldHistory(90),
+          fetchGoldSpot(),
+        ]);
         newsQuery = "gold price XAU precious metals inflation geopolitics";
       } else {
         return res.status(400).json({ error: "Unknown symbol" });
       }
 
+      price = rateResult!.price;
+
+      // Use API-provided previous close for accurate day-over-day change.
+      // This avoids the AED cross-rate scale mismatch where candle[-2].close
+      // could be on a different scale than the current spot price.
       const lastCandle = candles[candles.length - 1];
-      const prevClose = candles.length > 1 ? candles[candles.length - 2].close : price;
+      const apiPrevClose = rateResult!.prevClose;
+      // Fall back to last candle only if the close is on the same scale as price
+      // (guard: if ratio is extreme, the scales differ — use price * 0.999 instead)
+      let prevClose: number;
+      if (apiPrevClose && apiPrevClose > 0) {
+        prevClose = apiPrevClose;
+      } else if (candles.length > 1) {
+        const candlePrev = candles[candles.length - 2].close;
+        // Sanity check: prev candle should be within 20% of current price
+        const ratio = Math.abs(candlePrev - price) / price;
+        prevClose = ratio < 0.20 ? candlePrev : price;
+      } else {
+        prevClose = price;
+      }
       const change = price - prevClose;
       const changePct = (change / prevClose) * 100;
 
@@ -1030,9 +1067,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         const info = symbolMap[sym];
         let price: number | null = null;
         if (info.type === "forex") {
-          price = await fetchCurrentRate(info.base, info.target);
+          const r = await fetchCurrentRate(info.base, info.target);
+          price = r.price;
         } else {
-          price = await fetchGoldSpot();
+          const r = await fetchGoldSpot();
+          price = r.price;
         }
         const label = sym.replace("_", "/");
         symbolResults.push({
