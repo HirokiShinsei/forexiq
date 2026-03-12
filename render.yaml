@@ -1,0 +1,64 @@
+services:
+  # ─────────────────────────────────────────────────────────────
+  # ForexIQ — Node.js / Express Backend
+  # Deployed as a Web Service on Render's free tier.
+  #
+  # Deploy steps:
+  #   1. Go to https://dashboard.render.com → New → Web Service
+  #   2. Connect your GitHub repo: HirokiShinsei/forexiq
+  #   3. Render auto-detects this file and pre-fills settings.
+  #   4. Add Environment Variables (see below).
+  #   5. Click "Create Web Service".
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: forexiq-api
+    runtime: node
+    region: singapore        # Closest to the Philippines (SEA)
+    plan: free
+
+    # Build: install deps + compile TypeScript → dist/index.cjs
+    buildCommand: npm ci && npm run build
+
+    # Start the compiled production server
+    startCommand: node dist/index.cjs
+
+    # Health check — Render uses this to verify the service is up
+    # Also used by the built-in keep-alive ping
+    healthCheckPath: /health
+
+    # Auto-deploy on every push to main
+    autoDeploy: true
+
+    # ─────────────────────────────────────────────
+    # Environment Variables
+    # Set these in Render Dashboard → Environment
+    # after the service is created, OR use the
+    # Render CLI: render env set KEY=value
+    # ─────────────────────────────────────────────
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: PORT
+        value: "10000"         # Render assigns its own port via $PORT;
+                               # this default is what Render expects
+
+      # Your Cloudflare Pages URL (primary) — REQUIRED for CORS
+      # Format: https://forexiq.pages.dev
+      # Find it: Cloudflare Dashboard → Pages → forexiq → Deployments
+      - key: ALLOWED_ORIGIN
+        sync: false            # marks as secret — set manually in dashboard
+
+      # If you add a custom domain on Cloudflare Pages, add it here too
+      # Format: https://yourdomain.com
+      - key: ALLOWED_ORIGIN_2
+        sync: false
+
+      # NewsData.io API key (free tier — 200 req/day)
+      # Get yours at https://newsdata.io → Dashboard → API Key
+      - key: NEWSDATA_API_KEY
+        sync: false
+
+      # RENDER_EXTERNAL_URL is auto-injected by Render — DO NOT set manually.
+      # The keep-alive ping reads this to find its own public URL.
+      # Example value: https://forexiq-api.onrender.com

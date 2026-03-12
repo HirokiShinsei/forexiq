@@ -1,6 +1,13 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+// Resolution order:
+//  1. VITE_API_URL  — set in Cloudflare Pages env vars to your Render backend URL
+//     e.g. https://forexiq.onrender.com
+//  2. __PORT_5000__ — replaced by deploy_website() proxy at Perplexity Computer deploy time
+//  3. "" (empty)   — same-origin relative paths during local dev (Vite proxies /api → :5000)
+const VITE_API_URL = import.meta.env.VITE_API_URL as string | undefined;
+const PPLX_PROXY  = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+const API_BASE    = VITE_API_URL?.replace(/\/$/, "") || PPLX_PROXY;
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {

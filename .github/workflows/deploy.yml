@@ -1,5 +1,22 @@
 name: Build & Deploy ForexIQ
 
+# ─────────────────────────────────────────────────────────────
+# Architecture:
+#   Frontend  → Cloudflare Pages  (static, dist/public/)
+#   Backend   → Render            (Node.js, auto-deploys via render.yaml)
+#
+# This workflow handles the FRONTEND (Cloudflare Pages) deploy.
+# Render auto-deploys the backend on every push to main via
+# its GitHub integration — no extra workflow step needed.
+#
+# Required GitHub Secrets (Settings → Secrets → Actions):
+#   CLOUDFLARE_API_TOKEN   — Cloudflare Dashboard → My Profile →
+#                            API Tokens → Create Token →
+#                            Use "Edit Cloudflare Workers" template
+#   CLOUDFLARE_ACCOUNT_ID  — Cloudflare Dashboard → right sidebar
+#                            (32-char hex string)
+# ─────────────────────────────────────────────────────────────
+
 on:
   push:
     branches: [main]
@@ -7,56 +24,111 @@ on:
     branches: [main]
 
 jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Job 1: Type-check + Build
+  # Runs on every push and every PR.
+  # ─────────────────────────────────────────────────────────────
   build:
-    name: Build
+    name: Type-check & Build
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Type-check
+      - name: TypeScript type-check
         run: npm run check
 
-      - name: Build
+      - name: Build (frontend + backend)
         run: npm run build
         env:
           NODE_ENV: production
+          # VITE_API_URL is baked into the frontend bundle at build time.
+          # Set this to your Render backend URL so the Cloudflare Pages
+          # frontend knows where to send API requests.
+          # Format: https://forexiq-api.onrender.com  (no trailing slash)
+          # Add this as a GitHub Secret: Settings → Secrets → Actions
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
 
-      - name: Upload build artifact
+      - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
-          retention-days: 7
+          name: dist-public
+          path: dist/public/        # Only the static frontend output
+          retention-days: 1
 
+  # ─────────────────────────────────────────────────────────────
+  # Job 2: Deploy frontend to Cloudflare Pages
+  # Only runs on pushes to main (not on PRs).
+  # Uses the static build output from Job 1.
+  # This is a STATIC PAGES deploy — NOT a Workers deploy.
+  # Cloudflare serves dist/public/ as-is. No Node.js runtime.
+  # ─────────────────────────────────────────────────────────────
   deploy-pages:
-    name: Deploy to Cloudflare Pages (Frontend)
+    name: Deploy to Cloudflare Pages
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - name: Download build artifact
+      - name: Download dist artifact
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: dist-public
+          path: dist/public/
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Pages (static)
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: forexiq
-          directory: dist/public
+          directory: dist/public     # Static files only — HTML/CSS/JS + _headers + _redirects
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          # wranglerVersion is intentionally omitted — pages-action@v1 uses
+          # a direct Pages API upload, NOT wrangler deploy. This avoids the
+          # Node built-in module errors that wrangler deploy causes.
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 3: Post-deploy health check
+  # Pings the Render backend /health endpoint after deploy
+  # to confirm the API is reachable from GitHub Actions.
+  # Runs after Cloudflare Pages deploy succeeds.
+  # Skipped on PRs and if RENDER_SERVICE_URL secret is not set.
+  # ─────────────────────────────────────────────────────────────
+  health-check:
+    name: Backend Health Check (Render)
+    needs: deploy-pages
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Ping Render /health
+        run: |
+          if [ -z "$RENDER_SERVICE_URL" ]; then
+            echo "⚠️  RENDER_SERVICE_URL secret not set — skipping health check."
+            exit 0
+          fi
+          echo "Pinging $RENDER_SERVICE_URL/health ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 --retry 3 --retry-delay 10 \
+            "$RENDER_SERVICE_URL/health")
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Backend healthy (HTTP $STATUS)"
+          else
+            echo "❌ Backend returned HTTP $STATUS — check Render logs"
+            exit 1
+          fi
+        env:
+          # Add this secret: Settings → Secrets → Actions
+          # Value: https://forexiq-api.onrender.com  (your Render service URL)
+          RENDER_SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}

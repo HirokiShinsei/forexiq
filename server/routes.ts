@@ -787,6 +787,11 @@ function getFallbackNews(): NewsItem[] {
 // ──────────────────────────────────────────────
 export async function registerRoutes(httpServer: Server, app: Express) {
 
+  // GET /health — used by Render keep-alive ping and uptime monitors
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", ts: Date.now() });
+  });
+
   // GET /api/market/:symbol
   app.get("/api/market/:symbol", async (req, res) => {
     const { symbol } = req.params;

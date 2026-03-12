@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import https from "https";
 
 const app = express();
 const httpServer = createServer(app);
@@ -88,31 +89,64 @@ app.use("/api/news", newsFetchLimiter);
 app.use("/api/search", newsFetchLimiter);
 
 // ──────────────────────────────────────────────
-// CORS — only allow same-origin requests to API
-// External calls (Frankfurter, gold-api, NewsData)
-// are made server-side, so browser CORS is irrelevant.
-// Block cross-origin API access by default.
+// CORS — allow Cloudflare Pages frontend to call
+// this Render backend. All API fetches are made
+// server-side to external APIs (no browser CORS
+// needed for those), but the frontend→backend
+// calls DO cross origins and need explicit CORS.
 // ──────────────────────────────────────────────
-app.use("/api/", (req: Request, res: Response, next: NextFunction) => {
-  const origin = req.headers.origin;
-  const host = req.headers.host;
 
-  // Allow: no origin (server-side / Postman), same-origin, or localhost dev
-  const allowedOrigins = [
-    undefined,
-    null,
-    `http://localhost:5000`,
-    `http://127.0.0.1:5000`,
-    process.env.ALLOWED_ORIGIN, // set in production via env var
-  ].filter(Boolean);
+// Build the allowed origins list from env + dev defaults
+function getAllowedOrigins(): string[] {
+  const origins: string[] = [
+    "http://localhost:5000",
+    "http://localhost:3000",
+    "http://127.0.0.1:5000",
+  ];
 
-  if (origin && !allowedOrigins.includes(origin)) {
-    return res.status(403).json({ error: "Forbidden" });
+  // ALLOWED_ORIGIN: primary production origin (Cloudflare Pages URL)
+  // e.g. https://forexiq.pages.dev  OR  https://yourdomain.com
+  if (process.env.ALLOWED_ORIGIN) {
+    origins.push(process.env.ALLOWED_ORIGIN);
   }
 
-  // Remove any CORS headers that could allow cross-origin fetches
-  res.removeHeader("Access-Control-Allow-Origin");
-  next();
+  // ALLOWED_ORIGIN_2: optional second origin (custom domain on Pages)
+  if (process.env.ALLOWED_ORIGIN_2) {
+    origins.push(process.env.ALLOWED_ORIGIN_2);
+  }
+
+  return origins;
+}
+
+app.use("/api/", (req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  const allowedOrigins = getAllowedOrigins();
+
+  // Preflight — respond immediately with CORS headers
+  if (req.method === "OPTIONS") {
+    if (!origin || allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin || "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Max-Age", "86400");
+    }
+    return res.sendStatus(204);
+  }
+
+  // Actual request — set CORS header if origin is allowed
+  if (!origin) {
+    // Server-to-server / Postman / health checks — no origin header, allow
+    return next();
+  }
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    return next();
+  }
+
+  // Unknown origin — reject
+  return res.status(403).json({ error: "Forbidden" });
 });
 
 // ──────────────────────────────────────────────
@@ -200,6 +234,37 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      startKeepAlive();
     },
   );
 })();
+
+// ──────────────────────────────────────────────
+// Render Free Tier Keep-Alive
+// Render spins down free services after 15 min of
+// inactivity. RENDER_EXTERNAL_URL is automatically
+// injected by Render — so this only activates there.
+// Pings /health every 10 min to prevent spin-down.
+// ──────────────────────────────────────────────
+function startKeepAlive() {
+  const renderUrl = process.env.RENDER_EXTERNAL_URL;
+  if (!renderUrl) return; // not on Render — skip
+
+  const healthUrl = `${renderUrl}/health`;
+  log(`Keep-alive active → pinging ${healthUrl} every 10 min`);
+
+  setInterval(() => {
+    const req = https.get(healthUrl, (res) => {
+      log(`Keep-alive ping → ${res.statusCode}`);
+      res.resume(); // drain the response body
+    });
+    req.on("error", (err) => {
+      // Non-fatal — just log, don't crash the server
+      log(`Keep-alive ping failed: ${err.message}`);
+    });
+    req.setTimeout(10_000, () => {
+      req.destroy();
+      log("Keep-alive ping timed out");
+    });
+  }, 10 * 60 * 1000); // 10 minutes
+}
