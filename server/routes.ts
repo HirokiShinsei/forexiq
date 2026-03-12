@@ -648,6 +648,20 @@ async function fetchForexHistory(base: string, target: string, days = 90): Promi
         const low = Math.min(open, close) - Math.random() * volatility;
         bars.push({ time: Math.floor(new Date(date).getTime() / 1000), open, high, low, close });
       }
+      // Frankfurter only has yesterday’s close — upsert today’s live bar
+      const yfSym = base === "EUR" ? "EURPHP=X" : "PHP=X";
+      const liveQ = await fetchYFQuote(yfSym);
+      if (liveQ && liveQ.price > 0 && bars.length > 0) {
+        const todayTs = Math.floor(new Date().setUTCHours(0,0,0,0) / 1000);
+        const lastBar = bars[bars.length - 1];
+        if (Math.abs(lastBar.time - todayTs) < 86400) {
+          lastBar.close = liveQ.price;
+          lastBar.high  = Math.max(lastBar.high,  liveQ.price);
+          lastBar.low   = Math.min(lastBar.low,   liveQ.price);
+        } else {
+          bars.push({ time: todayTs, open: lastBar.close, high: liveQ.price, low: liveQ.price, close: liveQ.price });
+        }
+      }
       return bars;
     } catch (e) {
       console.error(`Frankfurter ${base}/${target} failed, trying Yahoo Finance:`, e);
@@ -655,34 +669,71 @@ async function fetchForexHistory(base: string, target: string, days = 90): Promi
   }
 
   // Yahoo Finance fallback / AED primary
-  // EUR/PHP → EURPHP=X, USD/PHP → PHP=X, AED/PHP → cross via AED=X * PHP=X
+  // EUR/PHP → EURPHP=X, USD/PHP → PHP=X, AED/PHP → cross via (1/AED=X) * PHP=X
   if (base === "AED" && target === "PHP") {
-    const [aedBars, usdBars] = await Promise.all([
-      fetchYFHistory("AED=X", days),  // AED/USD (inverted)
-      fetchYFHistory("PHP=X", days),  // USD/PHP
+    const [aedBars, usdBars, liveRate] = await Promise.all([
+      fetchYFHistory("AED=X", days),  // USD per AED (peg ≈3.6725)
+      fetchYFHistory("PHP=X", days),  // PHP per USD
+      fetchYFQuote("PHP=X"),
     ]);
     if (aedBars.length > 0 && usdBars.length > 0) {
-      // Cross rate: AED/PHP = (1/AED_USD) * USD_PHP ... but AED=X is USD per AED
+      // CORRECT formula: AED/PHP = (1 / aed_usd) * usd_php
+      // AED=X ≈ 3.6725  =>  1/3.6725 ≈ 0.2723  =>  0.2723 * 59.61 ≈ 16.23
       const n = Math.min(aedBars.length, usdBars.length);
-      return aedBars.slice(-n).map((bar, i) => {
+      const crossBars: OHLCBar[] = aedBars.slice(-n).map((bar, i) => {
         const usd = usdBars[usdBars.length - n + i];
-        // AED=X gives USD per AED; USD/PHP gives PHP per USD
-        // so AED/PHP = aedClose * usdClose
+        // Guard against zero/null values
+        const safeInv = (v: number) => (v && v > 0 ? 1 / v : 0);
         return {
           time: bar.time,
-          open: bar.open * usd.open,
-          high: bar.high * usd.high,
-          low: bar.low * usd.low,
-          close: bar.close * usd.close,
+          open:  safeInv(bar.open)  * (usd.open  || 0),
+          high:  safeInv(bar.low)   * (usd.high  || 0), // inv(low AED) * high PHP = max AED/PHP
+          low:   safeInv(bar.high)  * (usd.low   || 0), // inv(high AED) * low PHP = min AED/PHP
+          close: safeInv(bar.close) * (usd.close || 0),
         };
       });
+      // Upsert today’s live bar so candle chart is always current-day
+      const todayTs = Math.floor(new Date().setUTCHours(0,0,0,0) / 1000);
+      const lastBar = crossBars[crossBars.length - 1];
+      if (liveRate) {
+        const liveAED = await fetchYFQuote("AED=X");
+        const livePrice = liveAED && liveAED.price > 1 ? (1 / liveAED.price) * liveRate.price : liveRate.price * 0.2723;
+        if (lastBar && Math.abs(lastBar.time - todayTs) < 86400) {
+          // Update today’s existing bar with current live close
+          lastBar.close = livePrice;
+          lastBar.high  = Math.max(lastBar.high,  livePrice);
+          lastBar.low   = Math.min(lastBar.low,   livePrice);
+        } else {
+          // Append new intraday bar for today
+          crossBars.push({ time: todayTs, open: lastBar?.close ?? livePrice, high: livePrice, low: livePrice, close: livePrice });
+        }
+      }
+      return crossBars.filter(b => b.close > 0);
     }
-    return generateMockCandles(days, 15.52, 0.002);
+    return generateMockCandles(days, 16.22, 0.002);
   }
 
   const yfSymbol = base === "EUR" ? "EURPHP=X" : "PHP=X";
   const bars = await fetchYFHistory(yfSymbol, days);
-  if (bars.length > 0) return bars;
+
+  // Upsert today’s live bar — Yahoo daily bars lag until session close
+  if (bars.length > 0) {
+    const liveQ = await fetchYFQuote(yfSymbol);
+    if (liveQ && liveQ.price > 0) {
+      const todayTs = Math.floor(new Date().setUTCHours(0,0,0,0) / 1000);
+      const lastBar = bars[bars.length - 1];
+      if (Math.abs(lastBar.time - todayTs) < 86400) {
+        // Update today’s bar with live close
+        lastBar.close = liveQ.price;
+        lastBar.high  = Math.max(lastBar.high,  liveQ.price);
+        lastBar.low   = Math.min(lastBar.low,   liveQ.price);
+      } else {
+        // Append today’s intraday bar
+        bars.push({ time: todayTs, open: lastBar.close, high: liveQ.price, low: liveQ.price, close: liveQ.price });
+      }
+    }
+    return bars;
+  }
 
   // Last resort: mock data at realistic prices
   const fallbacks: Record<string, number> = { EUR: 68.6, USD: 59.6, AED: 16.22 };
@@ -691,9 +742,28 @@ async function fetchForexHistory(base: string, target: string, days = 90): Promi
 
 // ── Gold history: Yahoo Finance GC=F (gold futures) ───────────────────
 async function fetchGoldHistory(days = 90): Promise<OHLCBar[]> {
-  const bars = await fetchYFHistory("GC=F", days);
-  if (bars.length > 0) return bars;
-  // Fallback at realistic March 2026 gold price (~$3150-3200/oz)
+  const [bars, liveQ] = await Promise.all([
+    fetchYFHistory("GC=F", days),
+    fetchYFQuote("GC=F"),
+  ]);
+  if (bars.length > 0) {
+    // Upsert today’s live bar — GC=F daily bars lag until the session closes
+    if (liveQ && liveQ.price > 1000) {
+      const todayTs = Math.floor(new Date().setUTCHours(0,0,0,0) / 1000);
+      const lastBar = bars[bars.length - 1];
+      if (Math.abs(lastBar.time - todayTs) < 86400) {
+        // Same-day bar: update with live close
+        lastBar.close = liveQ.price;
+        lastBar.high  = Math.max(lastBar.high,  liveQ.price);
+        lastBar.low   = Math.min(lastBar.low,   liveQ.price);
+      } else {
+        // New day: append today’s intraday bar
+        bars.push({ time: todayTs, open: lastBar.close, high: liveQ.price, low: liveQ.price, close: liveQ.price });
+      }
+    }
+    return bars;
+  }
+  // Fallback at realistic March 2026 gold price
   return generateMockCandles(days, 3180, 0.008);
 }
 
