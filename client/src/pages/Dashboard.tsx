@@ -217,8 +217,11 @@ export default function Dashboard() {
       {/* Tabs */}
       <main className="flex-1 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          {/* Scrollable tab bar — works on any screen width */}
-          <div className="border-b border-border/60 bg-background/80 overflow-x-auto scrollbar-none">
+          {/* Scrollable tab bar — fade-right hint shows more tabs exist */}
+          <div className="relative border-b border-border/60 bg-background/80">
+            {/* Fade-out gradient on the right — only visible on mobile */}
+            <div className="pointer-events-none absolute right-0 top-0 h-full w-12 bg-gradient-to-l from-background/90 to-transparent z-10 lg:hidden" />
+            <div className="overflow-x-auto scrollbar-none">
             <TabsList className="bg-transparent h-auto p-0 gap-0 flex w-max min-w-full">
               {SYMBOLS.map(sym => (
                 <TabsTrigger
@@ -232,7 +235,8 @@ export default function Dashboard() {
                 </TabsTrigger>
               ))}
             </TabsList>
-          </div>
+            </div>{/* end overflow-x-auto */}
+          </div>{/* end relative */}
 
           <div className="flex-1 overflow-y-auto">
             {SYMBOLS.map(sym => (
