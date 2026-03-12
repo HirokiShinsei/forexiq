@@ -10,18 +10,15 @@ interface Props {
 const SENTIMENT_CONFIG = {
   BULLISH: {
     Icon: TrendingUp,
-    cls: "bg-green-900/30 text-green-400 border-green-800/40",
-    dot: "bg-green-400",
+    cls: "bg-emerald-900/30 text-emerald-400 border-emerald-800/40",
   },
   BEARISH: {
     Icon: TrendingDown,
     cls: "bg-red-900/30 text-red-400 border-red-800/40",
-    dot: "bg-red-400",
   },
   NEUTRAL: {
     Icon: Minus,
     cls: "bg-muted text-muted-foreground border-border",
-    dot: "bg-muted-foreground",
   },
 };
 
@@ -42,7 +39,7 @@ export default function NewsPanel({ news, filterSymbol }: Props) {
   if (filtered.length === 0) {
     return (
       <div className="text-sm text-muted-foreground text-center py-8">
-        No recent news found.
+        No recent news found for this pair.
       </div>
     );
   }
@@ -55,50 +52,41 @@ export default function NewsPanel({ news, filterSymbol }: Props) {
         return (
           <div
             key={item.id}
-            className="rounded-lg border border-border/50 bg-card p-3 hover:border-border transition-colors"
+            className="rounded-xl border border-border/50 bg-card/60 p-3 hover:border-border/80 transition-colors"
           >
-            <div className="flex items-start gap-2">
-              <div className={`flex-shrink-0 mt-0.5 rounded px-1.5 py-0.5 border text-xs flex items-center gap-1 ${cfg.cls}`}>
-                <Icon size={10} />
-                <span className="font-medium">{item.sentiment}</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <a
-                  href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-medium leading-snug hover:text-primary transition-colors line-clamp-2 flex gap-1"
-                >
-                  {item.title}
-                  <ExternalLink size={11} className="flex-shrink-0 mt-0.5 opacity-50" />
-                </a>
-                {item.description && (
-                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                    {item.description}
-                  </p>
-                )}
-                <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
-                  <span className="font-medium">{item.source}</span>
-                  <span>·</span>
-                  <span>{timeAgo(item.publishedAt)}</span>
-                  {item.relevance.length > 0 && (
-                    <>
-                      <span>·</span>
-                      <div className="flex gap-1">
-                        {item.relevance.map(r => (
-                          <span
-                            key={r}
-                            className="px-1.5 py-0.5 rounded text-xs bg-primary/10 text-primary"
-                          >
-                            {r}
-                          </span>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
+            {/* Sentiment badge + time — top row */}
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 border text-[10px] font-semibold flex-shrink-0 ${cfg.cls}`}>
+                <Icon size={9} />
+                {item.sentiment}
+              </span>
+              <span className="text-[11px] text-muted-foreground/60 truncate">
+                {item.source} · {timeAgo(item.publishedAt)}
+              </span>
             </div>
+
+            {/* Title — full width, wraps naturally */}
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group block"
+            >
+              <p className="text-sm font-medium leading-snug text-foreground/90 group-hover:text-primary transition-colors line-clamp-3">
+                {item.title}
+                <ExternalLink
+                  size={10}
+                  className="inline ml-1 opacity-40 group-hover:opacity-70 transition-opacity flex-shrink-0 -translate-y-px"
+                />
+              </p>
+            </a>
+
+            {/* Description */}
+            {item.description && (
+              <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2 leading-relaxed">
+                {item.description}
+              </p>
+            )}
           </div>
         );
       })}
