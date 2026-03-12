@@ -8,34 +8,49 @@ import https from "https";
 
 // ──────────────────────────────────────────────
 // CORS allow-list — built once at startup
+//
+// Hardcoded defaults cover the known deployments.
+// ALLOWED_ORIGIN / ALLOWED_ORIGIN_2 env vars let
+// you add extra origins (custom domains, previews)
+// without changing code.
 // ──────────────────────────────────────────────
 function getAllowedOrigins(): string[] {
   const origins: string[] = [
+    // Local development
     "http://localhost:5000",
     "http://localhost:3000",
     "http://127.0.0.1:5000",
+    // Production frontend — Cloudflare Pages
+    "https://forexiq.pages.dev",
   ];
+  // Extra origins from env (custom domain, preview deploys, etc.)
   if (process.env.ALLOWED_ORIGIN)   origins.push(process.env.ALLOWED_ORIGIN.trim());
   if (process.env.ALLOWED_ORIGIN_2) origins.push(process.env.ALLOWED_ORIGIN_2.trim());
   return origins;
 }
 const ALLOWED_ORIGINS = getAllowedOrigins();
 
+// Log allowed origins at startup so it's visible in Render logs
+console.log("[cors] allowed origins:", ALLOWED_ORIGINS);
+
 // Reusable CORS middleware — attached BEFORE Helmet, rate-limiters, and routes
 function applyCors(req: Request, res: Response, next: NextFunction) {
   const origin = req.headers.origin as string | undefined;
+  const originAllowed = Boolean(origin && ALLOWED_ORIGINS.includes(origin));
 
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
+  if (originAllowed) {
+    res.setHeader("Access-Control-Allow-Origin", origin!);
+    res.setHeader("Vary", "Origin");            // tell caches this response varies by Origin
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Credentials", "false");
   }
 
-  // Preflight — short-circuit immediately
+  // Preflight — only short-circuit for OPTIONS; always set Max-Age if origin matched
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Max-Age", "86400");
+    if (originAllowed) {
+      res.setHeader("Access-Control-Max-Age", "86400");
+    }
     return res.sendStatus(204);
   }
 
