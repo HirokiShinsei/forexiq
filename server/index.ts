@@ -45,6 +45,15 @@ function applyCors(req: Request, res: Response, next: NextFunction) {
 const app = express();
 const httpServer = createServer(app);
 
+// ──────────────────────────────────────────────
+// Trust proxy — required on Render (and any platform
+// behind a reverse proxy) so that express-rate-limit
+// can read the real client IP from X-Forwarded-For.
+// Without this, express-rate-limit throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
+// ──────────────────────────────────────────────
+app.set("trust proxy", 1);
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
