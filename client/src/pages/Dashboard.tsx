@@ -3,14 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import SignalCard from "../components/SignalCard";
 import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
 import PriceHistoryPanel from "../components/PriceHistoryPanel";
-import AIAnalysisCard from "../components/AIAnalysisCard";
+import FusedSignalCard from "../components/FusedSignalCard";
 import type { MarketData } from "../../../shared/schema";
-import { AlertCircle, Activity, Newspaper, Sparkles } from "lucide-react";
-import { apiRequest } from "../lib/queryClient";
+import { AlertCircle, Newspaper } from "lucide-react";
+import { apiRequest, queryClient } from "../lib/queryClient";
+
 
 const SYMBOLS = [
   { id: "EUR_PHP", label: "EUR/PHP", emoji: "🇪🇺🇵🇭" },
@@ -147,20 +147,29 @@ function MarketPanel({ symbol }: { symbol: string }) {
           </div>
         </div>
 
-        {/* Right: Signal + Context */}
+        {/* Right: Fused Signal + Context */}
         <div className="space-y-4">
 
-          {/* Decision Signal */}
+          {/* Fused Signal — unified verdict from local compute + LLM */}
           <div>
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
-              <Activity size={11} />
-              Decision Signal {ctx.isTransfer ? "— OFW / Remittance" : "— Investors"}
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" className="opacity-70">
+                <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Signal {ctx.isTransfer ? "— OFW / Remittance" : "— Investors"}
             </div>
-            <SignalCard signal={data.signal} symbol={symbol} />
+            <FusedSignalCard
+              fused={data.fusedSignal}
+              symbol={symbol}
+              onRefreshLLM={() => {
+                queryClient.invalidateQueries({ queryKey: ["/api/llm-analysis", symbol] });
+                // Refresh market data after a short delay to pick up new LLM cache
+                setTimeout(() => {
+                  queryClient.invalidateQueries({ queryKey: ["/api/market", symbol] });
+                }, 500);
+              }}
+            />
           </div>
-
-          {/* AI Deep Analysis — below Decision Signal */}
-          <AIAnalysisCard symbol={symbol} />
 
           <div className="rounded-xl border border-border/60 bg-card p-4">
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-3">

@@ -82,12 +82,54 @@ export type PeriodSnapshot = {
   closeDate: string;    // ISO date string e.g. "2026-03-11"
 };
 
+// Fused signal — weighted blend of local compute + LLM analysis
+export type FusedSignal = {
+  // Verdict & display
+  action: "BUY" | "SELL" | "HOLD" | "SEND_NOW" | "WAIT";
+  strength: "STRONG" | "MODERATE" | "WEAK";
+  label: string;
+  horizon: string;
+  confidence: number;        // 0–100
+
+  // Component scores (all on -100 → +100 scale)
+  techScore: number;         // RSI, MACD, SMA, Bollinger, Stochastic
+  newsSentimentScore: number;// live RSS news, recency-weighted
+  macroScore: number;        // structural macro factors
+  llmScore: number | null;   // derived from LLM outlook + newsSentiment; null if unavailable
+  compositeScore: number;    // final weighted blend
+
+  // Source info
+  llmAvailable: boolean;     // whether LLM contributed this cycle
+  llmModel: string | null;   // model name if used
+  llmGeneratedAt: string | null;
+
+  // Breakdown summary
+  weights: {
+    tech: number;
+    news: number;
+    macro: number;
+    llm: number;
+  };
+
+  // Reasoning bullets
+  techReasoning: string[];
+  macroReasoning: string[];
+  llmSummary: string | null; // LLM narrative if available
+  llmFactors: AIAnalysisFactor[] | null;
+  macroFactors: MacroFactor[];
+
+  // Scores passed through for display
+  geopoliticalRisk: number | null;
+  economicMomentum: number | null;
+};
+
 export type MarketData = {
   symbol: string;
   quote: TickerQuote;
   candles: OHLCBar[];
   indicators: TechnicalIndicators;
-  signal: Signal;
+  signal: Signal;            // legacy — kept for backward compat
+  fusedSignal: FusedSignal;  // new unified signal
   news: NewsItem[];
   periodStats?: PeriodSnapshot[];  // yesterday, last week, last month
 };

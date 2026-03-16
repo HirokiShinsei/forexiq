@@ -1,6 +1,11 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor } from "../shared/schema";
+import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor, FusedSignal } from "../shared/schema";
+
+// ──────────────────────────────────────────────────────────────
+// Module-level LLM cache (shared between /api/llm-analysis and /api/market)
+// ──────────────────────────────────────────────────────────────
+const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number }>();
 
 // ──────────────────────────────────────────────
 // Technical Analysis Helpers
@@ -541,7 +546,10 @@ function generateSignal(
     compositeScore,
     horizon,
     confidence,
-  };
+    // Exposed separately for fusion engine
+    _techReasoning:  techReasoning,
+    _macroReasoning: macroReasoning,
+  } as Signal & { _techReasoning: string[]; _macroReasoning: string[] };
 }
 
 // ──────────────────────────────────────────────
@@ -1021,9 +1029,137 @@ function getFallbackNews(): NewsItem[] {
   ];
 }
 
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Fusion Signal Engine
+// Combines local compute (tech + news + macro) with LLM analysis
+// when a cached LLM report is available for the symbol.
+//
+// Weights:
+//   Without LLM:  tech=50%  news=25%  macro=25%  llm=0%
+//   With LLM:     tech=35%  news=20%  macro=15%  llm=30%
+//
+// LLM score is derived from:
+//   outlook mapped to direction (+100 BULLISH / -100 BEARISH / 0 NEUTRAL)
+//   scaled by (confidence/100) and blended with llm.newsSentiment
+//   so the LLM's own news reading also contributes.
+// ──────────────────────────────────────────────────────────────
+function buildFusedSignal(
+  symbol: string,
+  signal: Signal,
+  macroFactors: MacroFactor[],
+  techReasoningBullets: string[],
+  macroReasoningBullets: string[]
+): FusedSignal {
+  const isTransfer = symbol.includes("PHP");
+
+  // Retrieve cached LLM report if still valid
+  const cached = llmCache.get(symbol);
+  const llmReport = (cached && Date.now() < cached.expiresAt) ? cached.report : null;
+
+  // ── LLM score derivation ───────────────────────────────────────
+  // Converts LLM outlook + confidence + newsSentiment into -100 → +100
+  let llmScore: number | null = null;
+  if (llmReport) {
+    const outlookDir = llmReport.outlook === "BULLISH" ? 1
+      : llmReport.outlook === "BEARISH" ? -1 : 0;
+    // Confidence-weighted direction score: ranges -100 → +100
+    const outlookScore = outlookDir * llmReport.confidence; // e.g. BULLISH @72% → +72
+    // LLM's own news sentiment (0–100) mapped to -100 → +100
+    const llmNewsScore = (llmReport.newsSentiment - 50) * 2; // 0→-100, 50→0, 100→+100
+    // Blend: 70% outlook direction + 30% LLM news reading
+    llmScore = Math.round(outlookScore * 0.7 + llmNewsScore * 0.3);
+    llmScore = Math.max(-100, Math.min(100, llmScore));
+  }
+
+  // ── Weights ───────────────────────────────────────────────────
+  const weights = llmScore !== null
+    ? { tech: 0.35, news: 0.20, macro: 0.15, llm: 0.30 }
+    : { tech: 0.50, news: 0.25, macro: 0.25, llm: 0.00 };
+
+  // ── Composite score ───────────────────────────────────────────
+  // macroScore from signal is not directly accessible, but compositeScore
+  // and individual scores are stored on signal
+  const techScore   = signal.techScore;          // -100 → +100
+  const newsScore   = signal.newsSentimentScore; // -100 → +100
+  // Derive macroScore from (compositeScore - tech*0.6 - newsMacro*0.4) —
+  // since original formula: composite = tech*0.6 + (news*0.5+macro*0.5)*0.4
+  // We just compute it directly from the signal's macroFactors
+  const macroScore  = scoreMacroFactors(macroFactors); // -100 → +100
+
+  const compositeScore = Math.round(
+    techScore  * weights.tech +
+    newsScore  * weights.news +
+    macroScore * weights.macro +
+    (llmScore ?? 0) * weights.llm
+  );
+
+  // ── Action derivation (same thresholds as generateSignal) ─────
+  const compositeRatio = (compositeScore + 100) / 200; // 0 → 1
+  let action: FusedSignal["action"];
+  let strength: FusedSignal["strength"];
+  let label: string;
+  let horizon: string;
+
+  if (compositeRatio >= 0.65) {
+    action   = isTransfer ? "SEND_NOW" : "BUY";
+    strength = compositeRatio >= 0.82 ? "STRONG" : "MODERATE";
+    label    = isTransfer
+      ? (strength === "STRONG" ? "Send Now" : "Good Time to Send")
+      : (strength === "STRONG" ? "Strong Buy" : "Buy");
+    horizon  = llmReport?.horizon
+      ?? (isTransfer
+        ? (strength === "STRONG" ? "Send within 1–2 days" : "Send within 3–5 days")
+        : (strength === "STRONG" ? "1–3 days" : "3–7 days"));
+  } else if (compositeRatio <= 0.35) {
+    action   = isTransfer ? "WAIT" : "SELL";
+    strength = compositeRatio <= 0.18 ? "STRONG" : "MODERATE";
+    label    = isTransfer
+      ? (strength === "STRONG" ? "Wait — Rate May Drop" : "Consider Waiting")
+      : (strength === "STRONG" ? "Strong Sell" : "Sell");
+    horizon  = llmReport?.horizon
+      ?? (isTransfer ? "Wait 3–7 days" : "3–7 days");
+  } else {
+    action   = isTransfer ? "WAIT" : "HOLD";
+    strength = "WEAK";
+    label    = isTransfer ? "Hold Off for Now" : "Hold";
+    horizon  = llmReport?.horizon ?? (isTransfer ? "Monitor daily" : "Monitor 1–2 weeks");
+  }
+
+  const confidence = Math.min(95, Math.round(Math.abs(compositeScore) * 0.9 + 10));
+
+  return {
+    action,
+    strength,
+    label,
+    horizon,
+    confidence,
+    techScore,
+    newsSentimentScore: newsScore,
+    macroScore,
+    llmScore,
+    compositeScore,
+    llmAvailable: llmReport !== null,
+    llmModel:       llmReport?.model ?? null,
+    llmGeneratedAt: llmReport?.generatedAt ?? null,
+    weights: {
+      tech:  Math.round(weights.tech  * 100),
+      news:  Math.round(weights.news  * 100),
+      macro: Math.round(weights.macro * 100),
+      llm:   Math.round(weights.llm   * 100),
+    },
+    techReasoning:  techReasoningBullets,
+    macroReasoning: macroReasoningBullets,
+    llmSummary:     llmReport?.summary   ?? null,
+    llmFactors:     llmReport?.factors   ?? null,
+    macroFactors,
+    geopoliticalRisk:  llmReport?.geopoliticalRisk  ?? null,
+    economicMomentum:  llmReport?.economicMomentum  ?? null,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────
 // Route Registration
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 export async function registerRoutes(httpServer: Server, app: Express) {
 
   // GET /health — used by Render keep-alive ping and uptime monitors
@@ -1126,7 +1262,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const indicators = computeIndicators(candles);
       // Fetch news FIRST so macro-aware signal engine can use it
       const news = await fetchNews(newsQuery);
-      const signal = generateSignal(symbol, quote, indicators, candles, news);
+      const signalRaw = generateSignal(symbol, quote, indicators, candles, news) as Signal & { _techReasoning: string[]; _macroReasoning: string[] };
+      const { _techReasoning, _macroReasoning, ...signal } = signalRaw;
 
       // ── Period snapshots: Yesterday / Last Week / Last Month ──────────
       // Derived from the candle history we already have (no extra API calls)
@@ -1184,7 +1321,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       }
 
-      res.json({ symbol, quote, candles, indicators, signal, news, periodStats });
+      // Build fused signal — blends local compute with cached LLM report (if available)
+      const fusedSignal = buildFusedSignal(
+        symbol,
+        signal as Signal,
+        signal.macroFactors,
+        _techReasoning,
+        _macroReasoning
+      );
+
+      res.json({ symbol, quote, candles, indicators, signal, fusedSignal, news, periodStats });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to fetch market data" });
@@ -1298,8 +1444,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // AI-generated deep analysis report via Hugging Face Inference
   // Model: Qwen/Qwen2.5-72B-Instruct  (Apache 2.0, 128K ctx)
   // 15-minute in-memory cache per symbol to minimise token costs
+  // (llmCache is module-level, shared with /api/market fusion)
   // ──────────────────────────────────────────────────────────────
-  const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number }>();
 
   app.get("/api/llm-analysis/:symbol", async (req, res) => {
     const { symbol } = req.params;
