@@ -1385,8 +1385,11 @@ Respond ONLY with a valid JSON object matching this exact schema:
 
 Do not include any text outside the JSON object.`;
 
+      // HF router auto-selects the best available provider for the model.
+      // Using :cheapest suffix keeps token costs minimal; auto falls back
+      // to :fastest if cheapest is unavailable.
       const hfResponse = await fetch(
-        "https://router.huggingface.co/novita/v1/chat/completions",
+        "https://router.huggingface.co/v1/chat/completions",
         {
           method: "POST",
           headers: {
@@ -1394,7 +1397,7 @@ Do not include any text outside the JSON object.`;
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "Qwen/Qwen2.5-72B-Instruct",
+            model: "Qwen/Qwen2.5-72B-Instruct:cheapest",
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: userPrompt },
@@ -1445,7 +1448,7 @@ Do not include any text outside the JSON object.`;
         newsSentiment:     Math.min(100, Math.max(0, Number(parsed.newsSentiment ?? 50))),
         disclaimer:        parsed.disclaimer ?? "For informational purposes only. Not financial advice.",
         generatedAt:       new Date().toISOString(),
-        model:             "Qwen/Qwen2.5-72B-Instruct",
+        model:             "Qwen/Qwen2.5-72B-Instruct", // routed via HF auto-provider
       };
 
       // Cache for 15 minutes
