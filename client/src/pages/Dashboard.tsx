@@ -7,9 +7,9 @@ import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
 import PriceHistoryPanel from "../components/PriceHistoryPanel";
 import FusedSignalCard from "../components/FusedSignalCard";
-import type { MarketData } from "../../../shared/schema";
+import type { MarketData, AIAnalysisReport } from "../../../shared/schema";
 import { AlertCircle, Newspaper } from "lucide-react";
-import { apiRequest, queryClient } from "../lib/queryClient";
+import { apiRequest } from "../lib/queryClient";
 
 
 const SYMBOLS = [
@@ -82,6 +82,24 @@ const MARKET_CONTEXT: Record<string, { isTransfer: boolean; paras: [string, stri
 
 function MarketPanel({ symbol }: { symbol: string }) {
   const { data, isLoading, error, refetch, isFetching } = useMarketData(symbol);
+
+  // Separate LLM query — independent from market data refresh
+  const {
+    refetch: refetchLLM,
+    isFetching: llmFetching,
+  } = useQuery<AIAnalysisReport>({
+    queryKey: ["/api/llm-analysis", symbol],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/llm-analysis/${symbol}`);
+      if (!res.ok) throw new Error("AI analysis failed");
+      return res.json();
+    },
+    staleTime: 14 * 60 * 1000,
+    retry: 1,
+    refetchOnWindowFocus: false,
+    // Don't auto-fetch on mount — let market data drive initial state via llmCache
+    enabled: false,
+  });
 
   if (isLoading) return <LoadingSkeleton />;
 
@@ -161,13 +179,15 @@ function MarketPanel({ symbol }: { symbol: string }) {
             <FusedSignalCard
               fused={data.fusedSignal}
               symbol={symbol}
-              onRefreshLLM={() => {
-                queryClient.invalidateQueries({ queryKey: ["/api/llm-analysis", symbol] });
-                // Refresh market data after a short delay to pick up new LLM cache
-                setTimeout(() => {
-                  queryClient.invalidateQueries({ queryKey: ["/api/market", symbol] });
-                }, 500);
+              llmLoading={llmFetching}
+              onRefreshLLM={async () => {
+                // Fetch fresh LLM report, then re-fetch market data
+                // so the fused signal picks up the new LLM cache
+                await refetchLLM();
+                refetch();
               }}
+              onRefreshLocal={() => refetch()}
+              isFetchingLocal={isFetching}
             />
           </div>
 

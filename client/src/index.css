@@ -352,3 +352,9 @@
 .scrollbar-none::-webkit-scrollbar {
   display: none;              /* Chrome/Safari/Opera */
 }
+
+/* ── AI analysis loading shimmer ── */
+@keyframes slide-shimmer {
+  0%   { transform: translateX(-150%); }
+  100% { transform: translateX(350%); }
+}
