@@ -91,3 +91,26 @@ export type MarketData = {
   news: NewsItem[];
   periodStats?: PeriodSnapshot[];  // yesterday, last week, last month
 };
+
+// AI-generated analysis report
+export type AIAnalysisFactor = {
+  name: string;
+  impact: "POSITIVE" | "NEGATIVE" | "NEUTRAL";
+  weight: number;  // 1–3 significance
+  detail: string;
+};
+
+export type AIAnalysisReport = {
+  verdict: string;              // e.g. "SEND NOW" / "WAIT" / "HOLD" / "BUY" / "SELL"
+  confidence: number;           // 0–100
+  outlook: "BULLISH" | "BEARISH" | "NEUTRAL";
+  horizon: string;              // e.g. "Next 24–48 hours"
+  summary: string;              // 2–3 sentence narrative
+  factors: AIAnalysisFactor[]; // key driving factors
+  geopoliticalRisk: number;     // 0–100
+  economicMomentum: number;     // 0–100
+  newsSentiment: number;        // 0–100
+  disclaimer: string;
+  generatedAt: string;          // ISO timestamp
+  model: string;                // which HF model was used
+};

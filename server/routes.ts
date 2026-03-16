@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot } from "../shared/schema";
+import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor } from "../shared/schema";
 
 // ──────────────────────────────────────────────
 // Technical Analysis Helpers
@@ -1291,5 +1291,170 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       ).slice(0, 8),
       allNews: news.slice(0, 8),
     });
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // GET /api/llm-analysis/:symbol
+  // AI-generated deep analysis report via Hugging Face Inference
+  // Model: Qwen/Qwen2.5-72B-Instruct  (Apache 2.0, 128K ctx)
+  // 15-minute in-memory cache per symbol to minimise token costs
+  // ──────────────────────────────────────────────────────────────
+  const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number }>();
+
+  app.get("/api/llm-analysis/:symbol", async (req, res) => {
+    const { symbol } = req.params;
+    const validSymbols = ["EUR_PHP", "USD_PHP", "AED_PHP", "XAU_USD"];
+    if (!validSymbols.includes(symbol)) {
+      return res.status(400).json({ error: "Invalid symbol" });
+    }
+
+    const hfToken = process.env.HF_API_TOKEN;
+    if (!hfToken) {
+      return res.status(503).json({ error: "AI analysis unavailable — HF_API_TOKEN not configured" });
+    }
+
+    // Check cache
+    const cached = llmCache.get(symbol);
+    if (cached && Date.now() < cached.expiresAt) {
+      return res.json(cached.report);
+    }
+
+    try {
+      // Gather current market context to feed to the model
+      const symbolLabels: Record<string, string> = {
+        EUR_PHP: "EUR/PHP (Euro to Philippine Peso)",
+        USD_PHP: "USD/PHP (US Dollar to Philippine Peso)",
+        AED_PHP: "AED/PHP (UAE Dirham to Philippine Peso)",
+        XAU_USD: "XAU/USD (Gold spot price in US Dollars)",
+      };
+      const pairLabel = symbolLabels[symbol];
+      const isTransfer = symbol.includes("PHP");
+
+      // Fetch live market data + news for context
+      const newsQuery = symbol === "EUR_PHP" ? "Euro Philippine Peso exchange rate ECB Europe Philippines economy"
+        : symbol === "USD_PHP" ? "US Dollar Philippine Peso exchange rate Federal Reserve Philippines economy"
+        : symbol === "AED_PHP" ? "UAE Dirham Philippine Peso exchange rate OFW remittance Dubai"
+        : "Gold price XAU USD commodities inflation safe haven";
+
+      const [news] = await Promise.all([fetchNews(newsQuery)]);
+
+      const newsContext = news.slice(0, 8).map(n =>
+        `- [${n.sentiment}] ${n.title} (${n.publishedAt.slice(0, 10)})`
+      ).join("\n");
+
+      const systemPrompt = `You are a professional forex and commodities analyst with deep expertise in Philippine OFW remittance markets, global macroeconomics, geopolitical risk, and central bank policy. Your analysis is data-driven, factual, and calibrated.`;
+
+      const userPrompt = `Analyze the current market conditions for ${pairLabel} and generate a structured JSON analysis report.
+
+Recent news headlines (last 48h):
+${newsContext}
+
+Current context:
+- Symbol: ${symbol}
+- ${isTransfer ? "Used primarily by OFW remittance senders" : "Traded as a commodity / investment"}
+- Analysis date: ${new Date().toISOString().slice(0, 10)}
+
+Provide a thorough analysis considering:
+1. Recent news sentiment and macro themes from the headlines above
+2. Geopolitical risks affecting ${pairLabel} (wars, sanctions, political instability)
+3. Central bank policy divergence and interest rate outlook
+4. Economic momentum indicators (GDP, inflation, trade balance)
+5. Global risk sentiment and safe-haven flows
+6. ${isTransfer ? "OFW remittance timing — is now a good time to send money?" : "Price momentum and investment case"}
+
+Respond ONLY with a valid JSON object matching this exact schema:
+{
+  "verdict": string,         // "SEND NOW" | "WAIT" | "HOLD" | "BUY" | "SELL" — ${isTransfer ? 'use SEND NOW or WAIT' : 'use BUY, SELL, or HOLD'}
+  "confidence": number,      // 0-100, how confident you are
+  "outlook": string,         // "BULLISH" | "BEARISH" | "NEUTRAL" — for the ${isTransfer ? 'peso recipient (higher = more pesos)' : 'price'}
+  "horizon": string,         // e.g. "Next 24-48 hours" or "1-2 weeks"
+  "summary": string,         // 2-3 sentences explaining the verdict and key driving forces
+  "factors": [               // 3-5 key factors driving the analysis
+    {
+      "name": string,         // short factor name
+      "impact": string,       // "POSITIVE" | "NEGATIVE" | "NEUTRAL" — from ${isTransfer ? 'OFW sender' : 'investor'} perspective
+      "weight": number,       // 1-3 significance
+      "detail": string        // 1-2 sentence explanation
+    }
+  ],
+  "geopoliticalRisk": number,  // 0-100 (100 = extreme risk)
+  "economicMomentum": number,  // 0-100 (100 = strong positive momentum)
+  "newsSentiment": number,     // 0-100 (100 = extremely bullish)
+  "disclaimer": string         // standard disclaimer (1 sentence)
+}
+
+Do not include any text outside the JSON object.`;
+
+      const hfResponse = await fetch(
+        "https://router.huggingface.co/novita/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${hfToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "Qwen/Qwen2.5-72B-Instruct",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            max_tokens: 1200,
+            temperature: 0.3,
+            response_format: { type: "json_object" },
+          }),
+        }
+      );
+
+      if (!hfResponse.ok) {
+        const errText = await hfResponse.text();
+        console.error("HF API error:", hfResponse.status, errText);
+        return res.status(502).json({ error: `AI service error: ${hfResponse.status}` });
+      }
+
+      const hfData = await hfResponse.json() as {
+        choices: Array<{ message: { content: string } }>;
+      };
+
+      const rawContent = hfData.choices?.[0]?.message?.content ?? "{}";
+      let parsed: Partial<AIAnalysisReport>;
+      try {
+        // Strip any markdown code fences if the model adds them
+        const cleaned = rawContent.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+        parsed = JSON.parse(cleaned);
+      } catch {
+        console.error("Failed to parse LLM JSON:", rawContent.slice(0, 300));
+        return res.status(502).json({ error: "AI response parse error" });
+      }
+
+      // Normalise and validate the report
+      const report: AIAnalysisReport = {
+        verdict:           parsed.verdict ?? (isTransfer ? "WAIT" : "HOLD"),
+        confidence:        Math.min(100, Math.max(0, Number(parsed.confidence ?? 50))),
+        outlook:           (["BULLISH","BEARISH","NEUTRAL"].includes(parsed.outlook ?? "") ? parsed.outlook : "NEUTRAL") as AIAnalysisReport["outlook"],
+        horizon:           parsed.horizon ?? "Next 24-48 hours",
+        summary:           parsed.summary ?? "Analysis unavailable.",
+        factors:           (Array.isArray(parsed.factors) ? parsed.factors : []).map((f: Partial<AIAnalysisFactor>) => ({
+          name:   f.name ?? "Unknown",
+          impact: (["POSITIVE","NEGATIVE","NEUTRAL"].includes(f.impact ?? "") ? f.impact : "NEUTRAL") as AIAnalysisFactor["impact"],
+          weight: Math.min(3, Math.max(1, Number(f.weight ?? 2))),
+          detail: f.detail ?? "",
+        })),
+        geopoliticalRisk:  Math.min(100, Math.max(0, Number(parsed.geopoliticalRisk ?? 50))),
+        economicMomentum:  Math.min(100, Math.max(0, Number(parsed.economicMomentum ?? 50))),
+        newsSentiment:     Math.min(100, Math.max(0, Number(parsed.newsSentiment ?? 50))),
+        disclaimer:        parsed.disclaimer ?? "For informational purposes only. Not financial advice.",
+        generatedAt:       new Date().toISOString(),
+        model:             "Qwen/Qwen2.5-72B-Instruct",
+      };
+
+      // Cache for 15 minutes
+      llmCache.set(symbol, { report, expiresAt: Date.now() + 15 * 60 * 1000 });
+
+      res.json(report);
+    } catch (err) {
+      console.error("LLM analysis error:", err);
+      res.status(500).json({ error: "AI analysis failed" });
+    }
   });
 }

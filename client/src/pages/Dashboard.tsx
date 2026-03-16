@@ -7,8 +7,9 @@ import SignalCard from "../components/SignalCard";
 import NewsPanel from "../components/NewsPanel";
 import QuoteHeader from "../components/QuoteHeader";
 import PriceHistoryPanel from "../components/PriceHistoryPanel";
+import AIAnalysisCard from "../components/AIAnalysisCard";
 import type { MarketData } from "../../../shared/schema";
-import { AlertCircle, Activity, Newspaper } from "lucide-react";
+import { AlertCircle, Activity, Newspaper, Sparkles } from "lucide-react";
 import { apiRequest } from "../lib/queryClient";
 
 const SYMBOLS = [
@@ -149,6 +150,7 @@ function MarketPanel({ symbol }: { symbol: string }) {
         {/* Right: Signal + Context */}
         <div className="space-y-4">
 
+          {/* Decision Signal */}
           <div>
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
               <Activity size={11} />
@@ -156,6 +158,9 @@ function MarketPanel({ symbol }: { symbol: string }) {
             </div>
             <SignalCard signal={data.signal} symbol={symbol} />
           </div>
+
+          {/* AI Deep Analysis — below Decision Signal */}
+          <AIAnalysisCard symbol={symbol} />
 
           <div className="rounded-xl border border-border/60 bg-card p-4">
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-3">
