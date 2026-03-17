@@ -121,6 +121,9 @@ export type FusedSignal = {
   // Scores passed through for display
   geopoliticalRisk: number | null;
   economicMomentum: number | null;
+
+  // Session context passed through from LLM report
+  sessionContext?: SessionSentiment;
 };
 
 export type MarketData = {
@@ -142,6 +145,17 @@ export type AIAnalysisFactor = {
   detail: string;
 };
 
+// Forex trading session identifier
+export type TradingSession = "ASIAN" | "LONDON" | "NEW_YORK";
+
+export type SessionSentiment = {
+  session: TradingSession;           // which session this analysis covers
+  sessionLabel: string;              // human-readable: "Asian Session" etc.
+  previousSessionRecap: string;      // 1–2 sentences: what happened in the session that just closed
+  incomingSessionOutlook: string;    // 1–2 sentences: what to watch/expect in the opening session
+  keyLevelsToWatch: string;          // price levels or macro events to monitor
+};
+
 export type AIAnalysisReport = {
   verdict: string;              // e.g. "SEND NOW" / "WAIT" / "HOLD" / "BUY" / "SELL"
   confidence: number;           // 0–100
@@ -154,5 +168,7 @@ export type AIAnalysisReport = {
   newsSentiment: number;        // 0–100
   disclaimer: string;
   generatedAt: string;          // ISO timestamp
-  model: string;                // which HF model was used
+  model: string;                // which model was used
+  // Session context — populated when triggered by session scheduler
+  sessionContext?: SessionSentiment;
 };

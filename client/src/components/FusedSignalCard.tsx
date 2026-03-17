@@ -38,7 +38,18 @@ import {
   Cpu,
   TrendingUp as ArrowUp,
   TrendingDown as ArrowDown,
+  Sun,
+  Building2,
+  Sunset,
+  Eye,
 } from "lucide-react";
+
+// ── Session config ───────────────────────────────────────────────────────────
+const SESSION_CONFIG = {
+  ASIAN:    { icon: Sun,       label: "Asian Session",   color: "text-amber-400",  bg: "bg-amber-500/10 border-amber-500/20" },
+  LONDON:   { icon: Building2, label: "London Session",  color: "text-sky-400",    bg: "bg-sky-500/10 border-sky-500/20" },
+  NEW_YORK: { icon: Sunset,    label: "New York Session", color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/20" },
+};
 
 // ── Action styling ────────────────────────────────────────────────────────────
 const ACTION_CONFIG = {
@@ -146,8 +157,8 @@ function AIWaitingState({ onRefresh }: { onRefresh?: () => void }) {
       </div>
 
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        AI analysis runs every 15 minutes. Hit "Generate" to request a fresh analysis now.
-        The verdict above reflects local compute signals only until AI responds.
+        AI session analysis refreshes at each trading session open (Asian · London · New York).
+        Hit "Generate" to request a fresh inference now. Verdict above reflects local compute only.
       </p>
     </div>
   );
@@ -171,7 +182,7 @@ function AILoadingState() {
       {/* Indeterminate progress bar */}
       <div className="space-y-1 mb-3">
         <div className="flex justify-between text-[10px]">
-          <span className="text-slate-500">Qwen 2.5 · 72B generating report</span>
+          <span className="text-slate-500">Kimi K2 · generating session report</span>
           <span className="text-violet-400 tabular-nums font-medium animate-pulse">···</span>
         </div>
         <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">
@@ -245,6 +256,17 @@ export default function FusedSignalCard({
                 AI+
               </span>
             )}
+            {fused.sessionContext && (() => {
+              const sKey = fused.sessionContext.session as keyof typeof SESSION_CONFIG;
+              const sCfg = SESSION_CONFIG[sKey] ?? SESSION_CONFIG["ASIAN"];
+              const SIcon = sCfg.icon;
+              return (
+                <span className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-semibold ${sCfg.bg} ${sCfg.color}`}>
+                  <SIcon size={8} />
+                  {fused.sessionContext.sessionLabel}
+                </span>
+              );
+            })()}
           </div>
           <p className="text-xs opacity-75 mt-0.5 truncate">{cfg.desc}</p>
         </div>
@@ -312,6 +334,40 @@ export default function FusedSignalCard({
               </button>
             )}
           </div>
+
+          {/* Session context banner — recap + outlook */}
+          {fused.sessionContext && (() => {
+            const sKey = fused.sessionContext.session as keyof typeof SESSION_CONFIG;
+            const sCfg = SESSION_CONFIG[sKey] ?? SESSION_CONFIG["ASIAN"];
+            const SIcon = sCfg.icon;
+            return (
+              <div className={`rounded-md border p-2.5 mb-3 ${sCfg.bg}`}>
+                <div className={`flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider mb-2 ${sCfg.color}`}>
+                  <SIcon size={10} />
+                  {fused.sessionContext.sessionLabel}
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold block mb-0.5">Previous Session Recap</span>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">{fused.sessionContext.previousSessionRecap}</p>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold block mb-0.5">Incoming Session Outlook</span>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">{fused.sessionContext.incomingSessionOutlook}</p>
+                  </div>
+                  {fused.sessionContext.keyLevelsToWatch && (
+                    <div>
+                      <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold flex items-center gap-1 mb-0.5">
+                        <Eye size={8} />
+                        Key Levels &amp; Events
+                      </span>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">{fused.sessionContext.keyLevelsToWatch}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Narrative */}
           <p className="text-xs text-slate-300 leading-relaxed mb-3">{fused.llmSummary}</p>

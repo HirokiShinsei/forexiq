@@ -1,31 +1,104 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor, FusedSignal } from "../shared/schema";
+import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor, FusedSignal, TradingSession, SessionSentiment } from "../shared/schema";
 
 // ──────────────────────────────────────────────────────────────
-// Module-level LLM cache
+// Trading Session Scheduler
 //
-// Cache strategy:
-//  - TTL: 12 hours (background auto-refresh keeps it warm)
-//  - Background scheduler runs every 12 hours and pre-fetches all symbols
-//  - Manual ?force=true on /api/llm-analysis/:symbol bypasses cache
-//  - Cached tokens on Groq do NOT count against rate limits
+// Inference fires at the START of each major forex session (UTC):
+//   Asian  — 00:00 UTC (08:00 PHT)  — warm-up at 23:55 UTC prev day
+//   London — 08:00 UTC (16:00 PHT)  — warm-up at 07:55 UTC
+//   NY     — 13:00 UTC (21:00 PHT)  — warm-up at 12:55 UTC
+//
+// Each inference includes:
+//   • Recap of the previous session
+//   • Outlook for the incoming session
+//
+// Cache TTL: held until the NEXT session starts
+// Manual ?force=true bypasses cache for immediate fresh inference
+// Cached tokens on Groq do NOT count against rate limits
 // ──────────────────────────────────────────────────────────────
-const LLM_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+
 const LLM_VALID_SYMBOLS = ["EUR_PHP", "USD_PHP", "AED_PHP", "XAU_USD"] as const;
 
-const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number; fetchedAt: number }>();
+// Session definitions: open time in UTC (hour, minute), display info
+const TRADING_SESSIONS: Array<{
+  id: TradingSession;
+  label: string;
+  openHourUTC: number;
+  openMinUTC: number;
+  markets: string;
+  previousSession: TradingSession;
+  previousSessionLabel: string;
+}> = [
+  { id: "ASIAN",    label: "Asian Session",   openHourUTC: 0,  openMinUTC: 0,  markets: "Tokyo, Sydney, Singapore, Manila",  previousSession: "NEW_YORK", previousSessionLabel: "New York Session" },
+  { id: "LONDON",   label: "London Session",  openHourUTC: 8,  openMinUTC: 0,  markets: "London, Frankfurt, Zurich",          previousSession: "ASIAN",    previousSessionLabel: "Asian Session" },
+  { id: "NEW_YORK", label: "New York Session", openHourUTC: 13, openMinUTC: 0, markets: "New York, Toronto",                  previousSession: "LONDON",   previousSessionLabel: "London Session" },
+];
 
-// Background auto-refresh — fires on server start (after 30s delay) then every 12h
-// Staggers each symbol by 15s to avoid burst rate-limit hits
+/** Returns which session is currently active (UTC now) and the one that just closed */
+function getCurrentSession(): { current: typeof TRADING_SESSIONS[number]; previous: typeof TRADING_SESSIONS[number] } {
+  const nowMinUTC = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+  // Sessions ordered by open time; find last one whose open is <= now
+  const sorted = [...TRADING_SESSIONS].sort((a, b) => (a.openHourUTC * 60 + a.openMinUTC) - (b.openHourUTC * 60 + b.openMinUTC));
+  let current = sorted[sorted.length - 1]; // default: last session of prev day (NY)
+  for (const s of sorted) {
+    if (nowMinUTC >= s.openHourUTC * 60 + s.openMinUTC) current = s;
+  }
+  const prev = TRADING_SESSIONS.find(s => s.id === current.previousSession)!;
+  return { current, previous: prev };
+}
+
+/** Returns ms until the NEXT session opens (= TTL for current cache entry) */
+function msUntilNextSession(): number {
+  const now = new Date();
+  const nowMs = now.getTime();
+  const sorted = [...TRADING_SESSIONS].sort((a, b) => (a.openHourUTC * 60 + a.openMinUTC) - (b.openHourUTC * 60 + b.openMinUTC));
+
+  for (const s of sorted) {
+    const candidate = new Date(now);
+    candidate.setUTCHours(s.openHourUTC, s.openMinUTC, 0, 0);
+    if (candidate.getTime() > nowMs) return candidate.getTime() - nowMs;
+  }
+  // All sessions already opened today — next is Asian tomorrow
+  const tomorrow = new Date(now);
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  tomorrow.setUTCHours(0, 0, 0, 0);
+  return tomorrow.getTime() - nowMs;
+}
+
+const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number; fetchedAt: number; session: TradingSession }>();
+
 let _bgRefreshRunner: (() => Promise<void>) | null = null;
-function startLLMBackgroundScheduler() {
+
+/**
+ * Arms the session-aware scheduler.
+ * Fires once on boot (30s warm-up), then reschedules itself for the NEXT session open.
+ */
+function startLLMSessionScheduler() {
   if (!_bgRefreshRunner) return;
-  const run = _bgRefreshRunner;
-  const scheduleNext = () => setTimeout(() => { run().finally(scheduleNext); }, LLM_CACHE_TTL_MS);
-  // Initial warm-up: 30 seconds after server start
-  setTimeout(() => { run().finally(scheduleNext); }, 30_000);
-  console.log("[LLM Background] Scheduler armed — first refresh in 30s, then every 12h");
+
+  const tick = async () => {
+    await _bgRefreshRunner!();
+    // Schedule next tick at the opening of the next session
+    const delay = msUntilNextSession();
+    const nextSession = TRADING_SESSIONS.find(s => {
+      const now = new Date();
+      const t = new Date(now);
+      t.setUTCHours(s.openHourUTC, s.openMinUTC, 0, 0);
+      return t.getTime() - now.getTime() === delay ||
+             Math.abs((t.getTime() - now.getTime()) - delay) < 5000;
+    });
+    const h = Math.floor(delay / 3_600_000);
+    const m = Math.floor((delay % 3_600_000) / 60_000);
+    console.log(`[LLM Session] Next refresh in ${h}h ${m}m (${nextSession?.label ?? 'next session'})`);
+    setTimeout(tick, delay);
+  };
+
+  // Initial warm-up: 30s after boot
+  setTimeout(tick, 30_000);
+  const { current } = getCurrentSession();
+  console.log(`[LLM Session] Scheduler armed. Currently: ${current.label}. First refresh in 30s.`);
 }
 
 // ──────────────────────────────────────────────
@@ -1175,6 +1248,7 @@ function buildFusedSignal(
     macroFactors,
     geopoliticalRisk:  llmReport?.geopoliticalRisk  ?? null,
     economicMomentum:  llmReport?.economicMomentum  ?? null,
+    sessionContext:    llmReport?.sessionContext,
   };
 }
 
@@ -1537,7 +1611,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   }
 
   // ── Shared LLM inference runner (used by route + background scheduler) ──
-  async function runLLMInference(symbol: string): Promise<AIAnalysisReport> {
+  async function runLLMInference(symbol: string, sessionOverride?: typeof TRADING_SESSIONS[number]): Promise<AIAnalysisReport> {
+    const sessionInfo = sessionOverride ?? getCurrentSession().current;
+    const prevSessionInfo = TRADING_SESSIONS.find(s => s.id === sessionInfo.previousSession)!;
     const groqKey   = process.env.GROQ_API_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
     const hfToken   = process.env.HF_API_TOKEN;
@@ -1568,42 +1644,56 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const systemPrompt = `You are a professional forex and commodities analyst with deep expertise in Philippine OFW remittance markets, global macroeconomics, geopolitical risk, and central bank policy. Your analysis is data-driven, factual, and calibrated.`;
 
-      const userPrompt = `Analyze the current market conditions for ${pairLabel} and generate a structured JSON analysis report.
+      const userPrompt = `Analyze the current market conditions for ${pairLabel} at the opening of the ${sessionInfo.label} and generate a structured JSON analysis report.
+
+SESSION CONTEXT:
+- Currently opening: ${sessionInfo.label} (${sessionInfo.markets})
+- Just closed: ${prevSessionInfo.label} (${prevSessionInfo.markets})
+- UTC time of this analysis: ${new Date().toUTCString()}
+- PHT time: ${new Date(new Date().getTime() + 8*3600*1000).toUTCString().replace('GMT', 'PHT')}
 
 Recent news headlines (last 48h):
 ${newsContext}
 
 Current context:
 - Symbol: ${symbol}
-- ${isTransfer ? "Used primarily by OFW remittance senders" : "Traded as a commodity / investment"}
+- ${isTransfer ? "Used primarily by OFW remittance senders (Filipino diaspora, OFW families)" : "Traded as a commodity / investment"}
 - Analysis date: ${new Date().toISOString().slice(0, 10)}
 
-Provide a thorough analysis considering:
-1. Recent news sentiment and macro themes from the headlines above
-2. Geopolitical risks affecting ${pairLabel} (wars, sanctions, political instability)
-3. Central bank policy divergence and interest rate outlook
-4. Economic momentum indicators (GDP, inflation, trade balance)
-5. Global risk sentiment and safe-haven flows
-6. ${isTransfer ? "OFW remittance timing — is now a good time to send money?" : "Price momentum and investment case"}
+Provide a thorough session-aware analysis considering:
+1. What happened during the ${prevSessionInfo.label} — key moves, catalysts, and tone
+2. What to expect/watch for as the ${sessionInfo.label} opens — key data releases, risk events, likely price behavior
+3. Geopolitical risks (wars, sanctions, political instability in Europe, Middle East, Asia, Philippines)
+4. Central bank policy divergence (ECB, Fed, BSP, RBA) and interest rate expectations
+5. Economic momentum (GDP, inflation, employment, trade balance for relevant economies)
+6. Global risk sentiment and safe-haven flows relevant to ${pairLabel}
+7. ${isTransfer ? "Specific guidance for OFW remittance senders: is it better to transact now or wait for the next session?" : "Price momentum and medium-term investment case"}
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {
-  "verdict": string,         // "SEND NOW" | "WAIT" | "HOLD" | "BUY" | "SELL" — ${isTransfer ? 'use SEND NOW or WAIT' : 'use BUY, SELL, or HOLD'}
-  "confidence": number,      // 0-100, how confident you are
-  "outlook": string,         // "BULLISH" | "BEARISH" | "NEUTRAL" — for the ${isTransfer ? 'peso recipient (higher = more pesos)' : 'price'}
-  "horizon": string,         // e.g. "Next 24-48 hours" or "1-2 weeks"
-  "summary": string,         // 2-3 sentences explaining the verdict and key driving forces
-  "factors": [               // 3-5 key factors driving the analysis
+  "verdict": string,              // "SEND NOW" | "WAIT" | "HOLD" | "BUY" | "SELL" — ${isTransfer ? 'use SEND NOW or WAIT' : 'use BUY, SELL, or HOLD'}
+  "confidence": number,           // 0-100
+  "outlook": string,              // "BULLISH" | "BEARISH" | "NEUTRAL" — for the ${isTransfer ? 'peso recipient (higher rate = more pesos per foreign currency)' : 'price'}
+  "horizon": string,              // e.g. "During ${sessionInfo.label}" or "Next 6-8 hours"
+  "summary": string,              // 2-3 sentences covering verdict, key session driver, and next session watch
+  "factors": [                    // 3-5 key factors
     {
       "name": string,
-      "impact": string,       // "POSITIVE" | "NEGATIVE" | "NEUTRAL" — from ${isTransfer ? 'OFW sender' : 'investor'} perspective
-      "weight": number,       // 1-3 significance
+      "impact": string,           // "POSITIVE" | "NEGATIVE" | "NEUTRAL" from ${isTransfer ? 'OFW sender' : 'investor'} perspective
+      "weight": number,           // 1-3
       "detail": string
     }
   ],
-  "geopoliticalRisk": number,  // 0-100
-  "economicMomentum": number,  // 0-100
-  "newsSentiment": number,     // 0-100
+  "geopoliticalRisk": number,     // 0-100
+  "economicMomentum": number,     // 0-100
+  "newsSentiment": number,        // 0-100
+  "sessionContext": {
+    "session": "${sessionInfo.id}",
+    "sessionLabel": "${sessionInfo.label}",
+    "previousSessionRecap": string,     // 1-2 sentences: what happened in the ${prevSessionInfo.label}
+    "incomingSessionOutlook": string,   // 1-2 sentences: what to watch/expect in ${sessionInfo.label}
+    "keyLevelsToWatch": string          // specific price levels, data releases, or macro events to watch
+  },
   "disclaimer": string
 }
 
@@ -1695,11 +1785,28 @@ Do not include any text outside the JSON object.`;
         throw new Error("AI response parse error");
       }
 
+      // Normalise sessionContext from LLM response
+      const rawCtx = (parsed as any).sessionContext;
+      const sessionContext: SessionSentiment | undefined = rawCtx ? {
+        session:                 ((["ASIAN","LONDON","NEW_YORK"].includes(rawCtx.session ?? "")) ? rawCtx.session : sessionInfo.id) as TradingSession,
+        sessionLabel:            rawCtx.sessionLabel ?? sessionInfo.label,
+        previousSessionRecap:    rawCtx.previousSessionRecap ?? "",
+        incomingSessionOutlook:  rawCtx.incomingSessionOutlook ?? "",
+        keyLevelsToWatch:        rawCtx.keyLevelsToWatch ?? "",
+      } : {
+        // Fallback: synthesize from what we know if LLM omitted it
+        session:                 sessionInfo.id,
+        sessionLabel:            sessionInfo.label,
+        previousSessionRecap:    `The ${prevSessionInfo.label} has just closed.`,
+        incomingSessionOutlook:  `The ${sessionInfo.label} is now opening across ${sessionInfo.markets}.`,
+        keyLevelsToWatch:        "Monitor upcoming macro data releases and price action at key levels.",
+      };
+
       const report: AIAnalysisReport = {
         verdict:          parsed.verdict ?? (isTransfer ? "WAIT" : "HOLD"),
         confidence:       Math.min(100, Math.max(0, Number(parsed.confidence ?? 50))),
         outlook:          (["BULLISH","BEARISH","NEUTRAL"].includes(parsed.outlook ?? "") ? parsed.outlook : "NEUTRAL") as AIAnalysisReport["outlook"],
-        horizon:          parsed.horizon ?? "Next 24-48 hours",
+        horizon:          parsed.horizon ?? `During ${sessionInfo.label}`,
         summary:          parsed.summary ?? "Analysis unavailable.",
         factors:          (Array.isArray(parsed.factors) ? parsed.factors : []).map((f: Partial<AIAnalysisFactor>) => ({
           name:   f.name ?? "Unknown",
@@ -1713,30 +1820,35 @@ Do not include any text outside the JSON object.`;
         disclaimer:       parsed.disclaimer ?? "For informational purposes only. Not financial advice.",
         generatedAt:      new Date().toISOString(),
         model:            usedModel,
+        sessionContext,
       };
 
-      // Store to 12-hour cache
-      llmCache.set(symbol, { report, expiresAt: Date.now() + LLM_CACHE_TTL_MS, fetchedAt: Date.now() });
+      // Cache until the next session opens
+      const ttl = msUntilNextSession();
+      llmCache.set(symbol, { report, expiresAt: Date.now() + ttl, fetchedAt: Date.now(), session: sessionInfo.id });
+      console.log(`[LLM] Cached ${symbol} for ${Math.round(ttl/60000)}min until next session`);
       return report;
   }
 
-  // Register the background refresh runner now that runLLMInference is defined
+  // Register the background runner now that runLLMInference is defined.
+  // The runner is called by startLLMSessionScheduler at each session open.
   _bgRefreshRunner = async () => {
-    console.log("[LLM Background] Starting scheduled refresh for all symbols...");
+    const { current } = getCurrentSession();
+    console.log(`[LLM Session] Refreshing all symbols for ${current.label}...`);
     for (let i = 0; i < LLM_VALID_SYMBOLS.length; i++) {
       const sym = LLM_VALID_SYMBOLS[i];
-      // Stagger by 15s per symbol to avoid rate-limit burst
-      await new Promise(r => setTimeout(r, i * 15_000));
+      // Stagger 15s per symbol to avoid Groq burst
+      if (i > 0) await new Promise(r => setTimeout(r, 15_000));
       try {
-        await runLLMInference(sym);
-        console.log(`[LLM Background] Refreshed ${sym}`);
+        await runLLMInference(sym, current);
+        console.log(`[LLM Session] ✓ ${sym} (${current.label})`);
       } catch (e) {
-        console.error(`[LLM Background] Failed to refresh ${sym}:`, (e as Error).message);
+        console.error(`[LLM Session] ✗ ${sym}:`, (e as Error).message);
       }
     }
-    console.log("[LLM Background] All symbols refreshed.");
+    console.log(`[LLM Session] All symbols refreshed for ${current.label}.`);
   };
-  startLLMBackgroundScheduler();
+  startLLMSessionScheduler();
 
   app.get("/api/llm-analysis/:symbol", async (req, res) => {
     const { symbol } = req.params;
