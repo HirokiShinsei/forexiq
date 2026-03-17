@@ -1440,12 +1440,79 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ──────────────────────────────────────────────────────────────
-  // GET /api/llm-analysis/:symbol
-  // AI-generated deep analysis report via Hugging Face Inference
-  // Model: Qwen/Qwen2.5-72B-Instruct  (Apache 2.0, 128K ctx)
-  // 15-minute in-memory cache per symbol to minimise token costs
-  // (llmCache is module-level, shared with /api/market fusion)
   // ──────────────────────────────────────────────────────────────
+  // GET /api/llm-analysis/:symbol
+  //
+  // Provider priority chain (fastest / most reliable first):
+  //   1. Groq        — GROQ_API_KEY   — llama-3.3-70b-versatile or compound
+  //                    ~400 tok/s, <300ms TTFT, 1K req/day free
+  //   2. Gemini Flash — GEMINI_API_KEY — gemini-2.0-flash
+  //                    ~150 tok/s, good reasoning, 1K req/day free
+  //   3. HF Inference — HF_API_TOKEN  — Qwen2.5-72B:cheapest (legacy fallback)
+  //                    ~20-40 tok/s, slow but still works
+  //
+  // At least ONE token must be set. 15-min in-memory cache per symbol.
+  // ──────────────────────────────────────────────────────────────
+
+  // Helper: call an OpenAI-compatible endpoint and return raw text content
+  async function callOpenAICompat(
+    url: string,
+    apiKey: string,
+    model: string,
+    messages: Array<{ role: string; content: string }>,
+    maxTokens: number,
+    temperature: number
+  ): Promise<string> {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      throw new Error(`${resp.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await resp.json() as { choices: Array<{ message: { content: string } }> };
+    return data.choices?.[0]?.message?.content ?? "{}";
+  }
+
+  // Helper: Gemini uses a different REST format
+  async function callGemini(
+    apiKey: string,
+    model: string,
+    systemPrompt: string,
+    userPrompt: string,
+    maxTokens: number
+  ): Promise<string> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          maxOutputTokens: maxTokens,
+          temperature: 0.3,
+        },
+      }),
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      throw new Error(`Gemini ${resp.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await resp.json() as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>
+    };
+    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+  }
 
   app.get("/api/llm-analysis/:symbol", async (req, res) => {
     const { symbol } = req.params;
@@ -1454,9 +1521,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid symbol" });
     }
 
-    const hfToken = process.env.HF_API_TOKEN;
-    if (!hfToken) {
-      return res.status(503).json({ error: "AI analysis unavailable — HF_API_TOKEN not configured" });
+    const groqKey   = process.env.GROQ_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const hfToken   = process.env.HF_API_TOKEN;
+
+    if (!groqKey && !geminiKey && !hfToken) {
+      return res.status(503).json({
+        error: "AI analysis unavailable — set GROQ_API_KEY, GEMINI_API_KEY, or HF_API_TOKEN on Render",
+      });
     }
 
     // Check cache
@@ -1466,7 +1538,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     try {
-      // Gather current market context to feed to the model
+      // ── Build prompts ───────────────────────────────────────────────
       const symbolLabels: Record<string, string> = {
         EUR_PHP: "EUR/PHP (Euro to Philippine Peso)",
         USD_PHP: "USD/PHP (US Dollar to Philippine Peso)",
@@ -1476,14 +1548,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const pairLabel = symbolLabels[symbol];
       const isTransfer = symbol.includes("PHP");
 
-      // Fetch live market data + news for context
       const newsQuery = symbol === "EUR_PHP" ? "Euro Philippine Peso exchange rate ECB Europe Philippines economy"
         : symbol === "USD_PHP" ? "US Dollar Philippine Peso exchange rate Federal Reserve Philippines economy"
         : symbol === "AED_PHP" ? "UAE Dirham Philippine Peso exchange rate OFW remittance Dubai"
         : "Gold price XAU USD commodities inflation safe haven";
 
-      const [news] = await Promise.all([fetchNews(newsQuery)]);
-
+      const news = await fetchNews(newsQuery);
       const newsContext = news.slice(0, 8).map(n =>
         `- [${n.sentiment}] ${n.title} (${n.publishedAt.slice(0, 10)})`
       ).join("\n");
@@ -1517,92 +1587,115 @@ Respond ONLY with a valid JSON object matching this exact schema:
   "summary": string,         // 2-3 sentences explaining the verdict and key driving forces
   "factors": [               // 3-5 key factors driving the analysis
     {
-      "name": string,         // short factor name
+      "name": string,
       "impact": string,       // "POSITIVE" | "NEGATIVE" | "NEUTRAL" — from ${isTransfer ? 'OFW sender' : 'investor'} perspective
       "weight": number,       // 1-3 significance
-      "detail": string        // 1-2 sentence explanation
+      "detail": string
     }
   ],
-  "geopoliticalRisk": number,  // 0-100 (100 = extreme risk)
-  "economicMomentum": number,  // 0-100 (100 = strong positive momentum)
-  "newsSentiment": number,     // 0-100 (100 = extremely bullish)
-  "disclaimer": string         // standard disclaimer (1 sentence)
+  "geopoliticalRisk": number,  // 0-100
+  "economicMomentum": number,  // 0-100
+  "newsSentiment": number,     // 0-100
+  "disclaimer": string
 }
 
 Do not include any text outside the JSON object.`;
 
-      // HF router auto-selects the best available provider for the model.
-      // Using :cheapest suffix keeps token costs minimal; auto falls back
-      // to :fastest if cheapest is unavailable.
-      const hfResponse = await fetch(
-        "https://router.huggingface.co/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${hfToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "Qwen/Qwen2.5-72B-Instruct:cheapest",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            max_tokens: 1200,
-            temperature: 0.3,
-            response_format: { type: "json_object" },
-          }),
-        }
-      );
+      // ── Provider chain: try each in order until one succeeds ────────────
+      let rawContent = "";
+      let usedModel  = "";
+      let providerUsed = "";
+      const msgs = [
+        { role: "system", content: systemPrompt },
+        { role: "user",   content: userPrompt },
+      ];
 
-      if (!hfResponse.ok) {
-        const errText = await hfResponse.text();
-        console.error("HF API error:", hfResponse.status, errText);
-        return res.status(502).json({ error: `AI service error: ${hfResponse.status}` });
+      // 1️⃣  Groq — llama-3.3-70b-versatile (~400 tok/s, free tier, OpenAI-compat)
+      if (groqKey) {
+        try {
+          rawContent   = await callOpenAICompat(
+            "https://api.groq.com/openai/v1/chat/completions",
+            groqKey,
+            "llama-3.3-70b-versatile",
+            msgs, 1200, 0.3
+          );
+          usedModel    = "Llama 3.3 70B (Groq)";
+          providerUsed = "groq";
+          console.log("[LLM] Groq OK for", symbol);
+        } catch (e) {
+          console.warn("[LLM] Groq failed, trying Gemini:", (e as Error).message);
+        }
       }
 
-      const hfData = await hfResponse.json() as {
-        choices: Array<{ message: { content: string } }>;
-      };
+      // 2️⃣  Gemini 2.0 Flash — fast, good reasoning, free 1K req/day
+      if (!rawContent && geminiKey) {
+        try {
+          rawContent   = await callGemini(geminiKey, "gemini-2.0-flash", systemPrompt, userPrompt, 1200);
+          usedModel    = "Gemini 2.0 Flash";
+          providerUsed = "gemini";
+          console.log("[LLM] Gemini OK for", symbol);
+        } catch (e) {
+          console.warn("[LLM] Gemini failed, trying HF:", (e as Error).message);
+        }
+      }
 
-      const rawContent = hfData.choices?.[0]?.message?.content ?? "{}";
+      // 3️⃣  HF Inference — slow fallback (legacy)
+      if (!rawContent && hfToken) {
+        try {
+          rawContent   = await callOpenAICompat(
+            "https://router.huggingface.co/v1/chat/completions",
+            hfToken,
+            "Qwen/Qwen2.5-72B-Instruct:cheapest",
+            msgs, 1200, 0.3
+          );
+          usedModel    = "Qwen 2.5 72B (HF)";
+          providerUsed = "hf";
+          console.log("[LLM] HF fallback OK for", symbol);
+        } catch (e) {
+          console.error("[LLM] All providers failed:", (e as Error).message);
+        }
+      }
+
+      if (!rawContent) {
+        return res.status(502).json({ error: "All AI providers failed or exhausted" });
+      }
+
+      // ── Parse + normalise ──────────────────────────────────────────
       let parsed: Partial<AIAnalysisReport>;
       try {
-        // Strip any markdown code fences if the model adds them
         const cleaned = rawContent.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
         parsed = JSON.parse(cleaned);
       } catch {
-        console.error("Failed to parse LLM JSON:", rawContent.slice(0, 300));
+        console.error("[LLM] JSON parse error from", providerUsed, rawContent.slice(0, 300));
         return res.status(502).json({ error: "AI response parse error" });
       }
 
-      // Normalise and validate the report
       const report: AIAnalysisReport = {
-        verdict:           parsed.verdict ?? (isTransfer ? "WAIT" : "HOLD"),
-        confidence:        Math.min(100, Math.max(0, Number(parsed.confidence ?? 50))),
-        outlook:           (["BULLISH","BEARISH","NEUTRAL"].includes(parsed.outlook ?? "") ? parsed.outlook : "NEUTRAL") as AIAnalysisReport["outlook"],
-        horizon:           parsed.horizon ?? "Next 24-48 hours",
-        summary:           parsed.summary ?? "Analysis unavailable.",
-        factors:           (Array.isArray(parsed.factors) ? parsed.factors : []).map((f: Partial<AIAnalysisFactor>) => ({
+        verdict:          parsed.verdict ?? (isTransfer ? "WAIT" : "HOLD"),
+        confidence:       Math.min(100, Math.max(0, Number(parsed.confidence ?? 50))),
+        outlook:          (["BULLISH","BEARISH","NEUTRAL"].includes(parsed.outlook ?? "") ? parsed.outlook : "NEUTRAL") as AIAnalysisReport["outlook"],
+        horizon:          parsed.horizon ?? "Next 24-48 hours",
+        summary:          parsed.summary ?? "Analysis unavailable.",
+        factors:          (Array.isArray(parsed.factors) ? parsed.factors : []).map((f: Partial<AIAnalysisFactor>) => ({
           name:   f.name ?? "Unknown",
           impact: (["POSITIVE","NEGATIVE","NEUTRAL"].includes(f.impact ?? "") ? f.impact : "NEUTRAL") as AIAnalysisFactor["impact"],
           weight: Math.min(3, Math.max(1, Number(f.weight ?? 2))),
           detail: f.detail ?? "",
         })),
-        geopoliticalRisk:  Math.min(100, Math.max(0, Number(parsed.geopoliticalRisk ?? 50))),
-        economicMomentum:  Math.min(100, Math.max(0, Number(parsed.economicMomentum ?? 50))),
-        newsSentiment:     Math.min(100, Math.max(0, Number(parsed.newsSentiment ?? 50))),
-        disclaimer:        parsed.disclaimer ?? "For informational purposes only. Not financial advice.",
-        generatedAt:       new Date().toISOString(),
-        model:             "Qwen/Qwen2.5-72B-Instruct", // routed via HF auto-provider
+        geopoliticalRisk: Math.min(100, Math.max(0, Number(parsed.geopoliticalRisk ?? 50))),
+        economicMomentum: Math.min(100, Math.max(0, Number(parsed.economicMomentum ?? 50))),
+        newsSentiment:    Math.min(100, Math.max(0, Number(parsed.newsSentiment ?? 50))),
+        disclaimer:       parsed.disclaimer ?? "For informational purposes only. Not financial advice.",
+        generatedAt:      new Date().toISOString(),
+        model:            usedModel,
       };
 
       // Cache for 15 minutes
       llmCache.set(symbol, { report, expiresAt: Date.now() + 15 * 60 * 1000 });
-
       res.json(report);
+
     } catch (err) {
-      console.error("LLM analysis error:", err);
+      console.error("[LLM] Unexpected error:", err);
       res.status(500).json({ error: "AI analysis failed" });
     }
   });
