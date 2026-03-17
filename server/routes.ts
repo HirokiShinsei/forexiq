@@ -3,9 +3,30 @@ import type { Server } from "http";
 import { OHLCBar, TechnicalIndicators, Signal, NewsItem, TickerQuote, MacroFactor, PeriodSnapshot, AIAnalysisReport, AIAnalysisFactor, FusedSignal } from "../shared/schema";
 
 // ──────────────────────────────────────────────────────────────
-// Module-level LLM cache (shared between /api/llm-analysis and /api/market)
+// Module-level LLM cache
+//
+// Cache strategy:
+//  - TTL: 12 hours (background auto-refresh keeps it warm)
+//  - Background scheduler runs every 12 hours and pre-fetches all symbols
+//  - Manual ?force=true on /api/llm-analysis/:symbol bypasses cache
+//  - Cached tokens on Groq do NOT count against rate limits
 // ──────────────────────────────────────────────────────────────
-const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number }>();
+const LLM_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const LLM_VALID_SYMBOLS = ["EUR_PHP", "USD_PHP", "AED_PHP", "XAU_USD"] as const;
+
+const llmCache = new Map<string, { report: AIAnalysisReport; expiresAt: number; fetchedAt: number }>();
+
+// Background auto-refresh — fires on server start (after 30s delay) then every 12h
+// Staggers each symbol by 15s to avoid burst rate-limit hits
+let _bgRefreshRunner: (() => Promise<void>) | null = null;
+function startLLMBackgroundScheduler() {
+  if (!_bgRefreshRunner) return;
+  const run = _bgRefreshRunner;
+  const scheduleNext = () => setTimeout(() => { run().finally(scheduleNext); }, LLM_CACHE_TTL_MS);
+  // Initial warm-up: 30 seconds after server start
+  setTimeout(() => { run().finally(scheduleNext); }, 30_000);
+  console.log("[LLM Background] Scheduler armed — first refresh in 30s, then every 12h");
+}
 
 // ──────────────────────────────────────────────
 // Technical Analysis Helpers
@@ -1440,18 +1461,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ──────────────────────────────────────────────────────────────
-  // ──────────────────────────────────────────────────────────────
   // GET /api/llm-analysis/:symbol
   //
   // Provider priority chain (fastest / most reliable first):
-  //   1. Groq        — GROQ_API_KEY   — llama-3.3-70b-versatile or compound
-  //                    ~400 tok/s, <300ms TTFT, 1K req/day free
+  //   1. Groq — GROQ_API_KEY
+  //      Model: moonshotai/kimi-k2-instruct (~250 tok/s, 1K RPD / 300K TPD free)
+  //      Fallback model: llama-3.3-70b-versatile (if Kimi quota hit)
   //   2. Gemini Flash — GEMINI_API_KEY — gemini-2.0-flash
-  //                    ~150 tok/s, good reasoning, 1K req/day free
+  //      ~150 tok/s, 1K req/day free
   //   3. HF Inference — HF_API_TOKEN  — Qwen2.5-72B:cheapest (legacy fallback)
-  //                    ~20-40 tok/s, slow but still works
+  //      ~20-40 tok/s, slow but still works
   //
-  // At least ONE token must be set. 15-min in-memory cache per symbol.
+  // Cache: 12-hour TTL. Background scheduler pre-fetches every 12h.
+  // ?force=true bypasses cache for a fresh inference.
   // ──────────────────────────────────────────────────────────────
 
   // Helper: call an OpenAI-compatible endpoint and return raw text content
@@ -1514,30 +1536,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
   }
 
-  app.get("/api/llm-analysis/:symbol", async (req, res) => {
-    const { symbol } = req.params;
-    const validSymbols = ["EUR_PHP", "USD_PHP", "AED_PHP", "XAU_USD"];
-    if (!validSymbols.includes(symbol)) {
-      return res.status(400).json({ error: "Invalid symbol" });
-    }
-
+  // ── Shared LLM inference runner (used by route + background scheduler) ──
+  async function runLLMInference(symbol: string): Promise<AIAnalysisReport> {
     const groqKey   = process.env.GROQ_API_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
     const hfToken   = process.env.HF_API_TOKEN;
 
     if (!groqKey && !geminiKey && !hfToken) {
-      return res.status(503).json({
-        error: "AI analysis unavailable — set GROQ_API_KEY, GEMINI_API_KEY, or HF_API_TOKEN on Render",
-      });
+      throw new Error("AI analysis unavailable — set GROQ_API_KEY, GEMINI_API_KEY, or HF_API_TOKEN on Render");
     }
 
-    // Check cache
-    const cached = llmCache.get(symbol);
-    if (cached && Date.now() < cached.expiresAt) {
-      return res.json(cached.report);
-    }
-
-    try {
       // ── Build prompts ───────────────────────────────────────────────
       const symbolLabels: Record<string, string> = {
         EUR_PHP: "EUR/PHP (Euro to Philippine Peso)",
@@ -1610,20 +1618,37 @@ Do not include any text outside the JSON object.`;
         { role: "user",   content: userPrompt },
       ];
 
-      // 1️⃣  Groq — llama-3.3-70b-versatile (~400 tok/s, free tier, OpenAI-compat)
+      // 1️⃣  Groq — Kimi K2 Instruct primary, llama-3.3-70b fallback
+      //     Kimi K2: 1T param MoE, strong reasoning, 250 tok/s on Groq free tier
+      //     Rate limits (free): 60 RPM, 1K RPD, 300K TPD
       if (groqKey) {
+        // Try Kimi K2 first
         try {
           rawContent   = await callOpenAICompat(
             "https://api.groq.com/openai/v1/chat/completions",
             groqKey,
-            "llama-3.3-70b-versatile",
+            "moonshotai/kimi-k2-instruct",
             msgs, 1200, 0.3
           );
-          usedModel    = "Llama 3.3 70B (Groq)";
-          providerUsed = "groq";
-          console.log("[LLM] Groq OK for", symbol);
+          usedModel    = "Kimi K2 Instruct (Groq)";
+          providerUsed = "groq-kimi";
+          console.log("[LLM] Groq/Kimi-K2 OK for", symbol);
         } catch (e) {
-          console.warn("[LLM] Groq failed, trying Gemini:", (e as Error).message);
+          console.warn("[LLM] Groq/Kimi-K2 failed, trying Groq/Llama:", (e as Error).message);
+          // Fallback to llama-3.3-70b on same Groq key
+          try {
+            rawContent   = await callOpenAICompat(
+              "https://api.groq.com/openai/v1/chat/completions",
+              groqKey,
+              "llama-3.3-70b-versatile",
+              msgs, 1200, 0.3
+            );
+            usedModel    = "Llama 3.3 70B (Groq)";
+            providerUsed = "groq-llama";
+            console.log("[LLM] Groq/Llama-3.3-70B OK for", symbol);
+          } catch (e2) {
+            console.warn("[LLM] Groq/Llama also failed, trying Gemini:", (e2 as Error).message);
+          }
         }
       }
 
@@ -1657,7 +1682,7 @@ Do not include any text outside the JSON object.`;
       }
 
       if (!rawContent) {
-        return res.status(502).json({ error: "All AI providers failed or exhausted" });
+        throw new Error("All AI providers failed or exhausted");
       }
 
       // ── Parse + normalise ──────────────────────────────────────────
@@ -1667,7 +1692,7 @@ Do not include any text outside the JSON object.`;
         parsed = JSON.parse(cleaned);
       } catch {
         console.error("[LLM] JSON parse error from", providerUsed, rawContent.slice(0, 300));
-        return res.status(502).json({ error: "AI response parse error" });
+        throw new Error("AI response parse error");
       }
 
       const report: AIAnalysisReport = {
@@ -1690,13 +1715,58 @@ Do not include any text outside the JSON object.`;
         model:            usedModel,
       };
 
-      // Cache for 15 minutes
-      llmCache.set(symbol, { report, expiresAt: Date.now() + 15 * 60 * 1000 });
-      res.json(report);
+      // Store to 12-hour cache
+      llmCache.set(symbol, { report, expiresAt: Date.now() + LLM_CACHE_TTL_MS, fetchedAt: Date.now() });
+      return report;
+  }
 
+  // Register the background refresh runner now that runLLMInference is defined
+  _bgRefreshRunner = async () => {
+    console.log("[LLM Background] Starting scheduled refresh for all symbols...");
+    for (let i = 0; i < LLM_VALID_SYMBOLS.length; i++) {
+      const sym = LLM_VALID_SYMBOLS[i];
+      // Stagger by 15s per symbol to avoid rate-limit burst
+      await new Promise(r => setTimeout(r, i * 15_000));
+      try {
+        await runLLMInference(sym);
+        console.log(`[LLM Background] Refreshed ${sym}`);
+      } catch (e) {
+        console.error(`[LLM Background] Failed to refresh ${sym}:`, (e as Error).message);
+      }
+    }
+    console.log("[LLM Background] All symbols refreshed.");
+  };
+  startLLMBackgroundScheduler();
+
+  app.get("/api/llm-analysis/:symbol", async (req, res) => {
+    const { symbol } = req.params;
+    const force = req.query.force === "true";
+    if (!LLM_VALID_SYMBOLS.includes(symbol as typeof LLM_VALID_SYMBOLS[number])) {
+      return res.status(400).json({ error: "Invalid symbol" });
+    }
+
+    const groqKey   = process.env.GROQ_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const hfToken   = process.env.HF_API_TOKEN;
+
+    if (!groqKey && !geminiKey && !hfToken) {
+      return res.status(503).json({
+        error: "AI analysis unavailable — set GROQ_API_KEY, GEMINI_API_KEY, or HF_API_TOKEN on Render",
+      });
+    }
+
+    // Serve from cache unless ?force=true
+    const cached = llmCache.get(symbol);
+    if (!force && cached && Date.now() < cached.expiresAt) {
+      return res.json({ ...cached.report, _cachedAt: new Date(cached.fetchedAt).toISOString() });
+    }
+
+    try {
+      const report = await runLLMInference(symbol);
+      res.json(report);
     } catch (err) {
       console.error("[LLM] Unexpected error:", err);
-      res.status(500).json({ error: "AI analysis failed" });
+      res.status(502).json({ error: (err as Error).message ?? "AI analysis failed" });
     }
   });
 }

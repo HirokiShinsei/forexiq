@@ -90,11 +90,12 @@ function MarketPanel({ symbol }: { symbol: string }) {
   } = useQuery<AIAnalysisReport>({
     queryKey: ["/api/llm-analysis", symbol],
     queryFn: async () => {
+      // Regular fetch — serves from 12-hour server cache if available
       const res = await apiRequest("GET", `/api/llm-analysis/${symbol}`);
       if (!res.ok) throw new Error("AI analysis failed");
       return res.json();
     },
-    staleTime: 14 * 60 * 1000,
+    staleTime: 12 * 60 * 60 * 1000, // match server 12h cache
     retry: 1,
     refetchOnWindowFocus: false,
     // Don't auto-fetch on mount — let market data drive initial state via llmCache
@@ -181,10 +182,14 @@ function MarketPanel({ symbol }: { symbol: string }) {
               symbol={symbol}
               llmLoading={llmFetching}
               onRefreshLLM={async () => {
-                // Fetch fresh LLM report, then re-fetch market data
-                // so the fused signal picks up the new LLM cache
-                await refetchLLM();
-                refetch();
+                // ?force=true bypasses the 12h server cache for a fresh inference
+                const res = await apiRequest("GET", `/api/llm-analysis/${symbol}?force=true`);
+                if (res.ok) {
+                  // Manually populate the query cache so FusedSignalCard re-renders
+                  // then refetch market data so fusion picks up the new LLM report
+                  await refetchLLM();
+                  refetch();
+                }
               }}
               onRefreshLocal={() => refetch()}
               isFetchingLocal={isFetching}
