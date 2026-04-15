@@ -1848,8 +1848,10 @@ Do not include any text outside the JSON object.`;
     console.log(`[LLM Session] Refreshing all symbols for ${current.label}...`);
     for (let i = 0; i < LLM_VALID_SYMBOLS.length; i++) {
       const sym = LLM_VALID_SYMBOLS[i];
-      // Stagger 15s per symbol to avoid Groq burst
-      if (i > 0) await new Promise(r => setTimeout(r, 15_000));
+      // Stagger 25s per symbol.
+      // Groq free tier TPM limit is 6K for Qwen3-32B; each report uses ~2K tokens.
+      // 25s gap ensures each call lands in a fresh 60s TPM window (3 calls max/min).
+      if (i > 0) await new Promise(r => setTimeout(r, 25_000));
       try {
         await runLLMInference(sym, current);
         console.log(`[LLM Session] ✓ ${sym} (${current.label})`);
