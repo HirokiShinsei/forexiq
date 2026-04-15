@@ -182,7 +182,7 @@ function AILoadingState() {
       {/* Indeterminate progress bar */}
       <div className="space-y-1 mb-3">
         <div className="flex justify-between text-[10px]">
-          <span className="text-slate-500">Kimi K2 · generating session report</span>
+          <span className="text-slate-500">Qwen3-32B · thinking &amp; generating report</span>
           <span className="text-violet-400 tabular-nums font-medium animate-pulse">···</span>
         </div>
         <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">

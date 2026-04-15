@@ -1539,8 +1539,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   //
   // Provider priority chain (fastest / most reliable first):
   //   1. Groq — GROQ_API_KEY
-  //      Model: moonshotai/kimi-k2-instruct (~250 tok/s, 1K RPD / 300K TPD free)
-  //      Fallback model: llama-3.3-70b-versatile (if Kimi quota hit)
+  //      Model: qwen/qwen3-32b (~535 tok/s, thinking mode, 1K RPD / 500K TPD free)
+  //      Fallback model: meta-llama/llama-4-scout-17b-16e-instruct (if Qwen3 quota hit)
   //   2. Gemini Flash — GEMINI_API_KEY — gemini-2.0-flash
   //      ~150 tok/s, 1K req/day free
   //   3. HF Inference — HF_API_TOKEN  — Qwen2.5-72B:cheapest (legacy fallback)
@@ -1551,31 +1551,40 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ──────────────────────────────────────────────────────────────
 
   // Helper: call an OpenAI-compatible endpoint and return raw text content
+  // reasoningEffort: if set, enables Qwen3-style thinking mode ("default" = full CoT)
   async function callOpenAICompat(
     url: string,
     apiKey: string,
     model: string,
     messages: Array<{ role: string; content: string }>,
     maxTokens: number,
-    temperature: number
+    temperature: number,
+    reasoningEffort?: string
   ): Promise<string> {
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      response_format: { type: "json_object" },
+    };
+    // Qwen3 thinking mode — Groq exposes this via reasoning_effort
+    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: maxTokens,
-        temperature,
-        response_format: { type: "json_object" },
-      }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       const errBody = await resp.text();
       throw new Error(`${resp.status}: ${errBody.slice(0, 200)}`);
     }
     const data = await resp.json() as { choices: Array<{ message: { content: string } }> };
-    return data.choices?.[0]?.message?.content ?? "{}";
+    let content = data.choices?.[0]?.message?.content ?? "{}";
+    // Strip <think>…</think> reasoning blocks before JSON parsing
+    content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    return content;
   }
 
   // Helper: Gemini uses a different REST format
@@ -1708,36 +1717,38 @@ Do not include any text outside the JSON object.`;
         { role: "user",   content: userPrompt },
       ];
 
-      // 1️⃣  Groq — Kimi K2 Instruct primary, llama-3.3-70b fallback
-      //     Kimi K2: 1T param MoE, strong reasoning, 250 tok/s on Groq free tier
-      //     Rate limits (free): 60 RPM, 1K RPD, 300K TPD
+      // 1️⃣  Groq — Qwen3-32B primary (thinking mode), Llama 4 Scout fallback
+      //     Qwen3-32B: 32B dense, native thinking/CoT mode, ~535 tok/s on Groq
+      //     Rate limits (free): 60 RPM, 1K RPD, 500K TPD
+      //     Thinking mode: reasoning_effort="default", temperature=0.6 (per Qwen3 docs)
       if (groqKey) {
-        // Try Kimi K2 first
+        // Try Qwen3-32B with thinking mode first
         try {
           rawContent   = await callOpenAICompat(
             "https://api.groq.com/openai/v1/chat/completions",
             groqKey,
-            "moonshotai/kimi-k2-instruct",
-            msgs, 1200, 0.3
+            "qwen/qwen3-32b",
+            msgs, 1200, 0.6,
+            "default"  // enables CoT reasoning
           );
-          usedModel    = "Kimi K2 Instruct (Groq)";
-          providerUsed = "groq-kimi";
-          console.log("[LLM] Groq/Kimi-K2 OK for", symbol);
+          usedModel    = "Qwen3-32B Thinking (Groq)";
+          providerUsed = "groq-qwen3";
+          console.log("[LLM] Groq/Qwen3-32B thinking OK for", symbol);
         } catch (e) {
-          console.warn("[LLM] Groq/Kimi-K2 failed, trying Groq/Llama:", (e as Error).message);
-          // Fallback to llama-3.3-70b on same Groq key
+          console.warn("[LLM] Groq/Qwen3 failed, trying Groq/Llama-4-Scout:", (e as Error).message);
+          // Fallback: Llama 4 Scout — newer, 10M context, on Groq free tier
           try {
             rawContent   = await callOpenAICompat(
               "https://api.groq.com/openai/v1/chat/completions",
               groqKey,
-              "llama-3.3-70b-versatile",
+              "meta-llama/llama-4-scout-17b-16e-instruct",
               msgs, 1200, 0.3
             );
-            usedModel    = "Llama 3.3 70B (Groq)";
-            providerUsed = "groq-llama";
-            console.log("[LLM] Groq/Llama-3.3-70B OK for", symbol);
+            usedModel    = "Llama 4 Scout (Groq)";
+            providerUsed = "groq-llama4";
+            console.log("[LLM] Groq/Llama-4-Scout OK for", symbol);
           } catch (e2) {
-            console.warn("[LLM] Groq/Llama also failed, trying Gemini:", (e2 as Error).message);
+            console.warn("[LLM] Groq/Llama-4-Scout also failed, trying Gemini:", (e2 as Error).message);
           }
         }
       }
